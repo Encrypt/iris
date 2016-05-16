@@ -8,7 +8,7 @@ It is part of an MSc Project at Plymouth University, UK.
 
 ## Dependencies
 The following programs are needed in order to run IRIS:
-- [PostgreSQL](), used to store information about the packets
+- [PostgreSQL](http://www.postgresql.org/), used to store information about the packets
 - [Libprotoident](https://github.com/wanduow/libprotoident) which processes PCAP files to get the flows
 - Common tools: cut, sed, awk, md5sum...
 
