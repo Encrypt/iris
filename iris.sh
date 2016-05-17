@@ -46,6 +46,9 @@ process_dataset() {
 	local pcap_name pcap_md5 timestamp
 	local protocols protocol ids tmpfile
 	
+	# Tests if the file exists
+	[[ -e "${pcap_path}" ]] || return $(error 'file_doesnt_exist' "${pcap_path}")
+	
 	# Connects to the database
 	coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
 	
@@ -131,6 +134,8 @@ error() {
 		already_processed)
 			echo "The dataset $2 has already been processed. Exiting..." >&2
 			;;
+		file_doesnt_exist)
+			echo "The file $2 doesn't not exist on the disk. Exiting..." >&2
 		*)
 			echo "Unrecognized error: $err" >&2
 			;;
