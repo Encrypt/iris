@@ -3,7 +3,7 @@
 ## About
 IRIS is a bash script which goal is to achieve user profiling based on network activity.
 
-This program is under development and functionnalities will be added over time.
+This program is under development and functionnalities will be added over time.  
 It is part of an MSc Project at Plymouth University, UK.
 
 ## Dependencies
