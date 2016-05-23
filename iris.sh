@@ -102,17 +102,6 @@ fill_flows() {
 	done <&${db[0]}
 	
 	# Information
-	echo -ne 'done!\nRetrieving the existing protocols from the database... '
-	
-	# Gets the protocols already in the database
-	protocols=','
-	echo 'SELECT name FROM protocols; \echo EOF' >&${db[1]}
-	while read line
-	do
-		[[ "$line" != 'EOF' ]] && protocols+="${line}," || break
-	done <&${db[0]}
-	
-	# Information
 	echo -ne 'done!\nAnalysis of the flows of the PCAP in progress... '
 	
 	# Processes the PCAP file
@@ -121,21 +110,12 @@ fill_flows() {
 	# Information
 	echo -ne 'done!\nInsertion of the new protocols in the database... '
 	
-	# Adds the protocols not already in the database
-	for protocol in $(cut -f 1 -d ' ' $tmpfile | sort | uniq)
-	do
-	
-		if [[ "$protocols" != *",${protocol,,},"* ]]
-		then
-		
-			# Adds the appropriate row
-			echo "INSERT INTO protocols VALUES (DEFAULT, '${protocol,,}');" >&${db[1]}
-			
-			# Adds it in the protocols variable
-			protocols+="${protocol,,},"
-		
-		fi
-	done
+	# Adds the protocols not already existing in the database
+	echo 'CREATE TEMPORARY TABLE protocols_tmp (name VARCHAR(50) PRIMARY KEY);' >&${db[1]}
+	echo 'BEGIN;' >&${db[1]}
+	cut -f 1 -d ' ' analysis_pcap_1 | sort | uniq | awk '{print "INSERT INTO protocols_tmp VALUES (\47" tolower($1) "\47);"}' >&${db[1]}
+	echo 'COMMIT;'  >&${db[1]}
+	echo 'INSERT INTO protocols (name) SELECT t.name FROM protocols_tmp t LEFT JOIN protocols p ON t.name = p.name WHERE p.name IS NULL;' >&${db[1]}
 	
 	# Information
 	echo -ne 'done!\nInsertion of the flows in the database (this may take some time)... '
