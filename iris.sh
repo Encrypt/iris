@@ -113,8 +113,8 @@ fill_flows() {
 	# Adds the protocols not already existing in the database
 	echo 'CREATE TEMPORARY TABLE protocols_tmp (name VARCHAR(50) PRIMARY KEY);' >&${db[1]}
 	echo 'BEGIN;' >&${db[1]}
-	cut -f 1 -d ' ' analysis_pcap_1 | sort | uniq | awk '{print "INSERT INTO protocols_tmp VALUES (\47" tolower($1) "\47);"}' >&${db[1]}
-	echo 'COMMIT;'  >&${db[1]}
+	cut -d ' ' -f 1 $tmpfile | sort | uniq | awk '{print "INSERT INTO protocols_tmp VALUES (\47" tolower($1) "\47);"}' >&${db[1]}
+	echo 'COMMIT;' >&${db[1]}
 	echo 'INSERT INTO protocols (name) SELECT t.name FROM protocols_tmp t LEFT JOIN protocols p ON t.name = p.name WHERE p.name IS NULL;' >&${db[1]}
 	
 	# Information
