@@ -141,58 +141,44 @@ fill_websites() {
 	# Gets the basename of the PCAP
 	pcap_name=$(basename ${pcap_path})
 	
-	# Information
-	echo -n 'Analysis of the websites visited... '
-
-	# Processes the entries containing GETs / POSTs
-	ngrep -tqI "${pcap_path}" -W single -P '#' '^(GET|POST)' | awk '/Host: [a-zA-Z0-9]/{sub(/\[.*#Host:/,"") ; gsub("/", "-", $2) ; $3 = substr($3, 1, 12) ; sub("#.*", "", $7) ; split($6, end_a, ":") ; split($4, end_b, ":") ; print $2, $3, end_a[1], end_a[2], end_b[1], end_b[2], $7}' > $tmpfile
-	
-	# Information
-	echo -ne 'done!\nInsertion of the websites in the database... '
-	
 	# Creates a temporary database for the websites found in the PCAP
 	cat <<- SQL >&${db[1]}
 	CREATE TEMPORARY TABLE websites_tmp (
 		id 			SERIAL			PRIMARY KEY,
 		timestamp	TIMESTAMP		NOT NULL,
 		endpoint_a	INET			NOT NULL,
-		endpoint_b	INET			NOT NULL,
-		port_a		INT				NOT NULL,
-		port_b		INT				NOT NULL,
 		url			VARCHAR(255)	NOT NULL
 	);
 	SQL
 	
-	# Insert in the database
+	# Information
+	echo -n 'Analysis of the websites visited... '
+	
+	# Inserts in the websites in the temporary database
 	echo 'BEGIN;' >&${db[1]}
-	awk '{print "INSERT INTO websites_tmp VALUES (DEFAULT, \47"$1, $2 "\47, \47" $3 "\47, \47" $5 "\47, \47" $4 "\47, \47" $6 "\47, \47" $7 "\47);"}' $tmpfile >&${db[1]}
+	/usr/sbin/tcpdump -r ${pcap_path} -w - 'udp port 53' 2>/dev/null \
+		| tshark -T fields -e frame.time_epoch -e dns.a -e dns.qry.name -Y 'dns.flags.response eq 1' -r - \
+		| awk '{$1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {print "INSERT INTO websites_tmp VALUES (DEFAULT, to_timestamp(" $1 "), \47" ip[i] "\47, \47" $3 "\47);"}}' >&${db[1]}
 	echo 'COMMIT;' >&${db[1]}
 	
-	# Insert in the table "websites" the URLs of "websites_tmp" which do not exist
+	# Inserts in the table "websites" the URLs of "websites_tmp" which do not exist
 	echo 'INSERT INTO websites (url) SELECT DISTINCT t.url FROM websites_tmp t LEFT JOIN websites w ON t.url = w.url WHERE w.url IS NULL;' >&${db[1]}
 	
-	# Update the flows
+	# Updates the flows
 	cat <<- SQL >&${db[1]}
 	UPDATE flows
-	SET website = q.website_id
+	SET website = s.website_id
 	FROM (
-		SELECT DISTINCT s.id as flow_id, w.id as website_id FROM websites_tmp t
-		JOIN websites w ON w.url = t.url,
-		LATERAL (
-			SELECT f.id
-			FROM flows f
-			WHERE f.dataset = (SELECT id FROM datasets where name = '${pcap_name}')
-				AND f.protocol = (SELECT id FROM protocols where name = 'http')
-				AND f.timestamp >= t.timestamp - interval '1 minute'
-				AND f.timestamp < t.timestamp + interval '1 minute'
-				AND f.endpoint_a = t.endpoint_a
-				AND f.endpoint_b = t.endpoint_b
-				AND f.port_a = t.port_a
-				AND f.port_b = t.port_b
-			ORDER BY f.timestamp
-			ASC LIMIT 1) s
-		) q
-	WHERE flows.id = q.flow_id;
+		SELECT DISTINCT ON (f.id) f.id AS flow_id, w.id AS website_id, (f.timestamp - t.timestamp) AS tstamp_diff
+		FROM flows f
+		JOIN websites_tmp t ON f.endpoint_a = t.endpoint_a
+		JOIN websites w ON t.url = w.url
+		WHERE f.dataset = (SELECT id FROM datasets WHERE name = '${pcap_name}' ORDER BY added DESC LIMIT 1)
+			AND f.protocol IN (SELECT id FROM protocols WHERE name = 'http' OR name = 'https')
+			AND f.timestamp BETWEEN t.timestamp AND t.timestamp + interval '1 minute'
+		ORDER BY f.id, tstamp_diff ASC
+		) s
+	WHERE flows.id = s.flow_id;
 	SQL
 	
 	# Information
