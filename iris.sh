@@ -40,16 +40,19 @@ main() {
 	coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
 	
 	# Processes the dataset
-	fill_dataset "$pcap_path"
+	fill_dataset "$pcap_path" <&${db[0]} >&${db[1]}
 	
 	# Creates a temporary file to store the results of libprotoident / ngrep
 	tmpfile=$(mktemp)
 	
+	# Use another file descriptor for information
+	exec 3>&1
+	
 	# Fills the flows table
-	fill_flows "$pcap_path" "$tmpfile"
+	fill_flows "$pcap_path" "$tmpfile" <&${db[0]} >&${db[1]}
 	
 	# And finally the websites
-	fill_websites "$pcap_path" "$tmpfile"
+	fill_websites "$pcap_path" "$tmpfile" <&${db[0]} >&${db[1]}
 	
 	# Closes the database connection
 	echo '\q' >&${db[1]}
@@ -73,12 +76,12 @@ fill_dataset() {
 	timestamp=$(date '+%F %T')
 	
 	# Inserts the new dataset in the database if has not already been added
-	echo "INSERT INTO datasets VALUES (DEFAULT, '${pcap_name}', '${pcap_md5}', '${timestamp}'); \echo EOF" >&${db[1]}
+	echo "INSERT INTO datasets VALUES (DEFAULT, '${pcap_name}', '${pcap_md5}', '${timestamp}'); \echo EOF"
 	while read line
 	do
-		[[ "$line" == 'ERROR'* ]] && { echo '\q' >&${db[1]} ; error 'already_processed' "${pcap_name}" ; return $? ; }
+		[[ "$line" == 'ERROR'* ]] && { echo '\q' ; error 'already_processed' "${pcap_name}" ; return $? ; }
 		[[ "$line" == 'EOF' ]] && break
-	done <&${db[0]}
+	done
 	
 	return 0
 }
@@ -92,41 +95,41 @@ fill_flows() {
 	local protocols protocol ids
 
 	# Information
-	echo -n 'Retrieving the dataset ID from the database... '
+	echo -n 'Retrieving the dataset ID from the database... ' >&3
 	
 	# Gets the ID corresponding to the previous insert statement
-	echo 'SELECT id FROM datasets ORDER BY added DESC LIMIT 1; \echo EOF' >&${db[1]}
+	echo 'SELECT id FROM datasets ORDER BY added DESC LIMIT 1; \echo EOF'
 	while read line
 	do
 		[[ "$line" != 'EOF' ]] && dataset_id="$line" || break
-	done <&${db[0]}
+	done
 	
 	# Information
-	echo -ne 'done!\nAnalysis of the flows of the PCAP in progress... '
+	echo -ne 'done!\nAnalysis of the flows of the PCAP in progress... ' >&3
 	
 	# Processes the PCAP file
 	lpi_protoident "pcap:${pcap_path}" > $tmpfile 2>/dev/null
 	
 	# Information
-	echo -ne 'done!\nInsertion of the new protocols in the database... '
+	echo -ne 'done!\nInsertion of the new protocols in the database... ' >&3
 	
 	# Adds the protocols not already existing in the database
-	echo 'CREATE TEMPORARY TABLE protocols_tmp (name VARCHAR(50) PRIMARY KEY);' >&${db[1]}
-	echo 'BEGIN;' >&${db[1]}
-	awk '!exists[$1]++ {print "INSERT INTO protocols_tmp VALUES (\47" tolower($1) "\47);"}' $tmpfile >&${db[1]}	
-	echo 'COMMIT;' >&${db[1]}
-	echo 'INSERT INTO protocols (name) SELECT t.name FROM protocols_tmp t LEFT JOIN protocols p ON t.name = p.name WHERE p.name IS NULL;' >&${db[1]}
+	echo 'CREATE TEMPORARY TABLE protocols_tmp (name VARCHAR(50) PRIMARY KEY);'
+	echo 'BEGIN;'
+	awk '!exists[$1]++ {print "INSERT INTO protocols_tmp VALUES (\47" tolower($1) "\47);"}' $tmpfile
+	echo 'COMMIT;'
+	echo 'INSERT INTO protocols (name) SELECT t.name FROM protocols_tmp t LEFT JOIN protocols p ON t.name = p.name WHERE p.name IS NULL;'
 	
 	# Information
-	echo -ne 'done!\nInsertion of the flows in the database (this may take some time)... '
+	echo -ne 'done!\nInsertion of the flows in the database (this may take some time)... ' >&3
 	
 	# Insert in the database
-	echo 'BEGIN;' >&${db[1]}
-	awk -v dataset_id=${dataset_id} '{print "INSERT INTO flows VALUES (DEFAULT, " dataset_id ", NULL, (SELECT id FROM protocols WHERE name = \47" tolower($1) "\47), " $6 ", to_timestamp(" $7 "), \47" $2 "\47, \47" $3 "\47, " $4 ", " $5 ", " $8 ", " $9 ");"}' $tmpfile >&${db[1]}
-	echo 'COMMIT;' >&${db[1]}
+	echo 'BEGIN;'
+	awk -v dataset_id=${dataset_id} '{print "INSERT INTO flows VALUES (DEFAULT, " dataset_id ", NULL, (SELECT id FROM protocols WHERE name = \47" tolower($1) "\47), " $6 ", to_timestamp(" $7 "), \47" $2 "\47, \47" $3 "\47, " $4 ", " $5 ", " $8 ", " $9 ");"}' $tmpfile
+	echo 'COMMIT;'
 	
 	# Information
-	echo 'done!'
+	echo 'done!' >&3
 	
 	return 0
 }
@@ -142,7 +145,7 @@ fill_websites() {
 	pcap_name=$(basename ${pcap_path})
 	
 	# Creates a temporary database for the websites found in the PCAP
-	cat <<- SQL >&${db[1]}
+	cat <<- SQL
 	CREATE TEMPORARY TABLE websites_tmp (
 		id 			SERIAL			PRIMARY KEY,
 		timestamp	TIMESTAMP		NOT NULL,
@@ -152,20 +155,20 @@ fill_websites() {
 	SQL
 	
 	# Information
-	echo -n 'Analysis of the websites visited... '
+	echo -n 'Analysis of the websites visited... ' >&3
 	
 	# Inserts in the websites in the temporary database
-	echo 'BEGIN;' >&${db[1]}
+	echo 'BEGIN;'
 	/usr/sbin/tcpdump -r ${pcap_path} -w - 'udp port 53' 2>/dev/null \
 		| tshark -T fields -e frame.time_epoch -e dns.a -e dns.qry.name -Y 'dns.flags.response eq 1' -r - \
-		| awk '{$1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {print "INSERT INTO websites_tmp VALUES (DEFAULT, to_timestamp(" $1 "), \47" ip[i] "\47, \47" $3 "\47);"}}' >&${db[1]}
-	echo 'COMMIT;' >&${db[1]}
+		| awk '{$1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {print "INSERT INTO websites_tmp VALUES (DEFAULT, to_timestamp(" $1 "), \47" ip[i] "\47, \47" $3 "\47);"}}'
+	echo 'COMMIT;'
 	
 	# Inserts in the table "websites" the URLs of "websites_tmp" which do not exist
-	echo 'INSERT INTO websites (url) SELECT DISTINCT t.url FROM websites_tmp t LEFT JOIN websites w ON t.url = w.url WHERE w.url IS NULL;' >&${db[1]}
+	echo 'INSERT INTO websites (url) SELECT DISTINCT t.url FROM websites_tmp t LEFT JOIN websites w ON t.url = w.url WHERE w.url IS NULL;'
 	
 	# Updates the flows
-	cat <<- SQL >&${db[1]}
+	cat <<- SQL
 	UPDATE flows
 	SET website = s.website_id
 	FROM (
@@ -175,14 +178,14 @@ fill_websites() {
 		JOIN websites w ON t.url = w.url
 		WHERE f.dataset = (SELECT id FROM datasets WHERE name = '${pcap_name}' ORDER BY added DESC LIMIT 1)
 			AND f.protocol IN (SELECT id FROM protocols WHERE name = 'http' OR name = 'https')
-			AND f.timestamp BETWEEN t.timestamp AND t.timestamp + interval '1 minute'
+			AND f.timestamp BETWEEN t.timestamp AND t.timestamp + interval '15 minutes'
 		ORDER BY f.id, tstamp_diff ASC
 		) s
 	WHERE flows.id = s.flow_id;
 	SQL
 	
 	# Information
-	echo 'done!'
+	echo 'done!' >&3
 	
 	return 0
 }
