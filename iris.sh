@@ -150,6 +150,7 @@ fill_websites() {
 		id 			SERIAL			PRIMARY KEY,
 		timestamp	TIMESTAMP		NOT NULL,
 		endpoint_a	INET			NOT NULL,
+		endpoint_b	INET			NOT NULL,
 		url			VARCHAR(255)	NOT NULL
 	);
 	SQL
@@ -160,8 +161,8 @@ fill_websites() {
 	# Inserts in the websites in the temporary database
 	echo 'BEGIN;'
 	/usr/sbin/tcpdump -r ${pcap_path} -w - 'udp port 53' 2>/dev/null \
-		| tshark -T fields -e frame.time_epoch -e dns.a -e dns.qry.name -Y 'dns.flags.response eq 1' -r - \
-		| awk '{$1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {print "INSERT INTO websites_tmp VALUES (DEFAULT, to_timestamp(" $1 "), \47" ip[i] "\47, \47" $3 "\47);"}}'
+		| tshark -T fields -e frame.time_epoch -e dns.a -e ip.dst -e dns.qry.name -Y 'dns.flags.response eq 1' -r - \
+		| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {print "INSERT INTO websites_tmp VALUES (DEFAULT, to_timestamp(" $1 "), \47" ip[i] "\47, \47" $3 "\47, \47" $4 "\47);"}}'
 	echo 'COMMIT;'
 	
 	# Inserts in the table "websites" the URLs of "websites_tmp" which do not exist
@@ -174,7 +175,7 @@ fill_websites() {
 	FROM (
 		SELECT DISTINCT ON (f.id) f.id AS flow_id, w.id AS website_id, (f.timestamp - t.timestamp) AS tstamp_diff
 		FROM flows f
-		JOIN websites_tmp t ON f.endpoint_a = t.endpoint_a
+		JOIN websites_tmp t ON f.endpoint_a = t.endpoint_a AND f.endpoint_b = t.endpoint_b
 		JOIN websites w ON t.url = w.url
 		WHERE f.dataset = (SELECT id FROM datasets WHERE name = '${pcap_name}' ORDER BY added DESC LIMIT 1)
 			AND f.protocol IN (SELECT id FROM protocols WHERE name = 'http' OR name = 'https')
