@@ -146,7 +146,7 @@ fill_websites() {
 	
 	# Creates a temporary database for the websites found in the PCAP
 	cat <<- SQL
-	CREATE TEMPORARY TABLE websites_tmp (
+	CREATE TEMPORARY TABLE websites_analysis (
 		id 			SERIAL			PRIMARY KEY,
 		timestamp	TIMESTAMP		NOT NULL,
 		endpoint_a	INET			NOT NULL,
@@ -162,28 +162,27 @@ fill_websites() {
 	echo 'BEGIN;'
 	/usr/sbin/tcpdump -r ${pcap_path} -w - 'udp port 53' 2>/dev/null \
 		| tshark -T fields -e frame.time_epoch -e dns.a -e ip.dst -e dns.qry.name -Y 'dns.flags.response eq 1' -r - \
-		| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {print "INSERT INTO websites_tmp VALUES (DEFAULT, to_timestamp(" $1 "), \47" ip[i] "\47, \47" $3 "\47, \47" $4 "\47);"}}'
+		| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {print "INSERT INTO websites_analysis VALUES (DEFAULT, to_timestamp(" $1 "), \47" ip[i] "\47, \47" $3 "\47, \47" $4 "\47);"}}'
 	echo 'COMMIT;'
 	
-	# Inserts in the table "websites" the URLs of "websites_tmp" which do not exist
-	echo 'INSERT INTO websites (url) SELECT DISTINCT t.url FROM websites_tmp t LEFT JOIN websites w ON t.url = w.url WHERE w.url IS NULL;'
+	# Create a view to insert the necessary rows
+	cat <<- SQL
+	CREATE TEMPORARY VIEW websites_view AS
+	SELECT DISTINCT ON (f.id) f.id AS flow_id, w.id AS website_id, a.url as website_url, (f.timestamp - a.timestamp) AS tstamp_diff
+	FROM flows f
+	JOIN websites_analysis a ON f.endpoint_a = a.endpoint_a AND f.endpoint_b = a.endpoint_b
+	LEFT JOIN websites w ON a.url = w.url
+	WHERE f.dataset = (SELECT id FROM datasets WHERE name = '${pcap_name}' ORDER BY added DESC LIMIT 1)
+		AND f.protocol IN (SELECT id FROM protocols WHERE name = 'http' OR name = 'https')
+		AND f.timestamp BETWEEN a.timestamp AND a.timestamp + interval '15 minutes'
+	ORDER BY f.id, tstamp_diff ASC
+	SQL
+	
+	# Insert the URLs of the websites which do not yet exist in "websites"
+	echo 'INSERT INTO websites (url) SELECT DISTINCT website_url FROM websites_view WHERE website_id IS NULL;'
 	
 	# Updates the flows
-	cat <<- SQL
-	UPDATE flows
-	SET website = s.website_id
-	FROM (
-		SELECT DISTINCT ON (f.id) f.id AS flow_id, w.id AS website_id, (f.timestamp - t.timestamp) AS tstamp_diff
-		FROM flows f
-		JOIN websites_tmp t ON f.endpoint_a = t.endpoint_a AND f.endpoint_b = t.endpoint_b
-		JOIN websites w ON t.url = w.url
-		WHERE f.dataset = (SELECT id FROM datasets WHERE name = '${pcap_name}' ORDER BY added DESC LIMIT 1)
-			AND f.protocol IN (SELECT id FROM protocols WHERE name = 'http' OR name = 'https')
-			AND f.timestamp BETWEEN t.timestamp AND t.timestamp + interval '15 minutes'
-		ORDER BY f.id, tstamp_diff ASC
-		) s
-	WHERE flows.id = s.flow_id;
-	SQL
+	echo 'UPDATE flows SET website = v.website_id FROM websites_view v WHERE flows.id = v.flow_id;'
 	
 	# Information
 	echo 'done!' >&3
