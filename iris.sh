@@ -25,6 +25,7 @@ readonly ARGS_NB=$#
 # Global parameters of the script
 readonly PSQL_USER='<username>'
 readonly PSQL_DATABASE='<database>'
+readonly DMOZ_RDF=(ad-content kt-content content)
 
 # Main function
 main() {
@@ -53,6 +54,9 @@ main() {
 	
 	# And finally the websites
 	fill_websites "$pcap_path" "$tmpfile" <&${db[0]} >&${db[1]}
+	
+	# Updates the DMOZ database
+#	update_dmoz <&${db[0]} > test.sql
 	
 	# Closes the database connection
 	echo '\q' >&${db[1]}
@@ -165,24 +169,28 @@ fill_websites() {
 		| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {print "INSERT INTO websites_analysis VALUES (DEFAULT, to_timestamp(" $1 "), \47" ip[i] "\47, \47" $3 "\47, \47" $4 "\47);"}}'
 	echo 'COMMIT;'
 	
-	# Create a view to insert the necessary rows
+	# Creates a view to insert the necessary rows
 	cat <<- SQL
 	CREATE TEMPORARY VIEW websites_view AS
-	SELECT DISTINCT ON (f.id) f.id AS flow_id, w.id AS website_id, a.url as website_url, (f.timestamp - a.timestamp) AS tstamp_diff
+	SELECT DISTINCT ON (f.id) f.id AS flow_id, u.id AS url_id, a.url as url_value, (f.timestamp - a.timestamp) AS tstamp_diff
 	FROM flows f
 	JOIN websites_analysis a ON f.endpoint_a = a.endpoint_a AND f.endpoint_b = a.endpoint_b
-	LEFT JOIN websites w ON a.url = w.url
+	LEFT JOIN urls u ON a.url = u.value
 	WHERE f.dataset = (SELECT id FROM datasets WHERE name = '${pcap_name}' ORDER BY added DESC LIMIT 1)
 		AND f.protocol IN (SELECT id FROM protocols WHERE name = 'http' OR name = 'https')
 		AND f.timestamp BETWEEN a.timestamp AND a.timestamp + interval '15 minutes'
-	ORDER BY f.id, tstamp_diff ASC
+	ORDER BY f.id, tstamp_diff ASC;
 	SQL
 	
-	# Insert the URLs of the websites which do not yet exist in "websites"
-	echo 'INSERT INTO websites (url) SELECT DISTINCT website_url FROM websites_view WHERE website_id IS NULL;'
+	# Inserts the URLs of the websites which do not yet exist in "websites"
+	echo 'INSERT INTO urls (value) SELECT DISTINCT url_value FROM websites_view WHERE url_id IS NULL;'
+	
+	# Inserts the identified websites in the database
+	# TODO
 	
 	# Updates the flows
-	echo 'UPDATE flows SET website = v.website_id FROM websites_view v WHERE flows.id = v.flow_id;'
+	# TODO: To review
+	# echo 'UPDATE flows SET website = v.website_id FROM websites_view v WHERE flows.id = v.flow_id;'
 	
 	# Information
 	echo 'done!' >&3
@@ -190,6 +198,94 @@ fill_websites() {
 	return 0
 }
 
+# Updates DMOZ categories & database
+update_dmoz() {
+
+	# Local variables
+	local rdf
+	
+	# Creates the temporary tables for the update
+	cat <<- SQL
+	CREATE TEMPORARY TABLE dmoz_tmp (
+		id			SERIAL			PRIMARY KEY,
+		topic		VARCHAR(50)		NOT NULL,
+		subtopic	VARCHAR(50)		NOT NULL,
+		url			VARCHAR(255)	NOT NULL
+	);
+	SQL
+	
+	# Downloads the RDF databases
+#	for rdf in ${DMOZ_RDF[@]}
+#	do
+#		wget -qO /tmp/${rdf}.rdf.u8.gz http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz \
+#			&& gunzip /tmp/${rdf}.rdf.u8.gz \
+#			|| { error 'rdf_download' "http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz" ; }
+#	done
+	
+	# Inserts the DMOZ data in the database
+	echo 'BEGIN;'
+	for rdf in ${DMOZ_RDF[@]}
+	do
+		# Information
+		echo -n "Now adding the dataset ${rdf}... " >&3
+		
+		# Adds the dataset
+		sed -n 's/  <Topic r:id="\(Top\/\)\?\([^/]*\)\/\([^/]*\)">/\2 \3/p;s/    <link r:resource="https*:\/\/\([^/"]*\)\/".*/\1/p' /tmp/${rdf}.rdf.u8 \
+			| awk '{if(NF == 2){if($1 == "Top"){next} ; gsub("\47", "_") ; gsub(",", "") ; topic=$1 ; subtopic=$2} else {print "INSERT INTO dmoz_tmp VALUES (DEFAULT, \47" tolower(topic) "\47, \47" tolower(subtopic) "\47, \47" $0 "\47);"}}'
+		
+		# Information
+		echo 'done!' >&3
+		
+	done
+	echo 'COMMIT;'
+	
+	# Fills the "topics" and "suptopics" tables
+	echo 'INSERT INTO topics (name) SELECT DISTINCT d.topic FROM dmoz_tmp d LEFT JOIN topics t ON d.topic = t.name WHERE t.name IS NULL;'
+	echo 'INSERT INTO subtopics (name) SELECT DISTINCT d.subtopic FROM dmoz_tmp d LEFT JOIN subtopics s ON d.subtopic = s.name WHERE s.name IS NULL;'
+	
+	# Fills the "categories" table
+	cat <<- SQL
+	INSERT INTO categories (topic, subtopic)
+	SELECT q.topic, q.subtopic
+	FROM (
+		SELECT DISTINCT t.id AS topic, s.id AS subtopic
+		FROM dmoz_tmp d
+		JOIN topics t ON d.topic = t.name
+		JOIN subtopics s ON d.subtopic = s.name
+	) q
+	LEFT JOIN categories c ON q.topic = c.topic
+		AND q.subtopic = c.subtopic
+	WHERE c.id IS NULL;
+	SQL
+	
+	# Fills the "urls" table
+	echo 'INSERT INTO urls (value) SELECT DISTINCT d.url FROM dmoz_tmp d LEFT JOIN urls u ON d.url = u.value WHERE u.value IS NULL;'
+	
+	# Fills the "dmoz" table
+	cat <<- SQL
+	INSERT INTO dmoz (url, category)
+	SELECT u.id, q.category_id
+	FROM dmoz_tmp t
+	JOIN urls u ON t.url = u.value
+	JOIN (
+		SELECT c.id as category_id, t.id AS topic_id, t.name AS topic_name, s.id AS subtopic_id, s.name AS subtopic_name
+		FROM categories c
+		JOIN topics t ON c.topic = t.id
+		JOIN subtopics s ON c.subtopic = s.id
+		) q
+	ON t.topic = q.topic_name
+		AND t.subtopic = q.subtopic_name
+	LEFT JOIN dmoz d ON d.url = u.id
+		AND d.category = q.category_id
+	WHERE d.id IS NULL;
+	SQL
+	
+	# Remove all the downloaded RDFs
+#	rm /tmp/*.rdf.u8
+	
+	return 0
+
+}
 # Error handling
 error() {
 
@@ -203,6 +299,9 @@ error() {
 			;;
 		file_doesnt_exist)
 			echo "The file $2 doesn't not exist on the disk. Exiting..." >&2
+			;;
+		rdf_download)
+			echo "Error when trying to download the RDF: $2." >&2
 			;;
 		*)
 			echo "Unrecognized error: $err" >&2

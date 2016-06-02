@@ -40,7 +40,7 @@ CREATE TABLE urls (
 -- DMOZ database
 CREATE TABLE dmoz (
 	id				SERIAL	PRIMARY KEY,
-	url				INT		NOT NULL UNIQUE REFERENCES urls(id),
+	url				INT		NOT NULL REFERENCES urls(id),
 	category		INT		NOT NULL REFERENCES categories(id)
 );
 
