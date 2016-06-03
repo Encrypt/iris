@@ -31,38 +31,57 @@ readonly DMOZ_RDF=(ad-content kt-content content)
 main() {
 	
 	# Local variables
-	local pcap_path=${ARGS[0]}
+	local pcap_path
 	local tmpfile
 	
-	# Tests if the file exists on the disk
-	[[ -e "${pcap_path}" ]] || { error 'file_doesnt_exist' "${pcap_path}" ; return $? ; }
-		
+	# Checks that there are at least 2 arguments
+	[[ ${ARGS_NB} -ne 2 ]] && { error 'arguments_missing' ; return $? ; }
+	
 	# Opens a connection to the database
 	coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
 	
-	# Processes the dataset
-	fill_dataset "$pcap_path" <&${db[0]} >&${db[1]}
+	# Gets the command given
+	case ${ARGS[0]} in
 	
-	# Creates a temporary file to store the results of libprotoident / ngrep
-	tmpfile=$(mktemp)
-	
-	# Use another file descriptor for information
-	exec 3>&1
-	
-	# Fills the flows table
-	fill_flows "$pcap_path" "$tmpfile" <&${db[0]} >&${db[1]}
-	
-	# And finally the websites
-	fill_websites "$pcap_path" "$tmpfile" <&${db[0]} >&${db[1]}
-	
-	# Updates the DMOZ database
-#	update_dmoz <&${db[0]} > test.sql
-	
+		# Analyses a dataset
+		analyse)
+			
+			# Gets the PCAP path
+			pcap_path=${ARGS[1]}
+			
+			# Tests if the file exists on the disk
+			[[ -e "${pcap_path}" ]] || { error 'file_doesnt_exist' "${pcap_path}" ; return $? ; }
+			
+			# Processes the dataset
+			fill_dataset "$pcap_path" <&${db[0]} >&${db[1]}
+			
+			# Creates a temporary file to store the results of libprotoident / ngrep
+			tmpfile=$(mktemp)
+			
+			# Use another file descriptor for information
+			exec 3>&1
+			
+			# Fills the flows table
+			fill_flows "$pcap_path" "$tmpfile" <&${db[0]} >&${db[1]}
+			
+			# And finally the websites
+			fill_websites "$pcap_path" "$tmpfile" <&${db[0]} >&${db[1]}
+			
+			# Deletes the temporary file
+			rm $tmpfile
+			;;
+		
+		# Updates the DMOZ database
+		dmoz)
+			
+			[[ "${ARGS[1]}" == 'update' ]] \
+				&& update_dmoz <&${db[0]} >&${db[1]} \
+				|| { error 'dmoz_option' "${ARGS[1]}" ; return $? ; }
+			;;
+	esac
+		
 	# Closes the database connection
 	echo '\q' >&${db[1]}
-	
-	# Deletes the temporary file
-	rm $tmpfile
 	
 	return $?
 }
@@ -144,6 +163,7 @@ fill_websites() {
 	# Local variables
 	local pcap_path=$1 tmpfile=$2
 	local pcap_name
+	local filters extra_filter
 	
 	# Gets the basename of the PCAP
 	pcap_name=$(basename ${pcap_path})
@@ -186,11 +206,32 @@ fill_websites() {
 	echo 'INSERT INTO urls (value) SELECT DISTINCT url_value FROM websites_view WHERE url_id IS NULL;'
 	
 	# Inserts the identified websites in the database
-	# TODO
+	echo 'INSERT INTO websites (url) SELECT DISTINCT v.url_id FROM websites_view v LEFT JOIN websites w ON v.url_id = w.url WHERE w.url IS NULL;'
 	
-	# Updates the flows
-	# TODO: To review
-	# echo 'UPDATE flows SET website = v.website_id FROM websites_view v WHERE flows.id = v.flow_id;'
+	# Update the flows with the websites added
+	echo 'UPDATE flows f SET website = w.id FROM websites_view v JOIN websites w ON w.url = v.url_id WHERE f.id = v.flow_id;'
+	
+	# Automatically try to set a category to the new websites
+	filters=(
+		"AND c.topic NOT IN (SELECT id FROM topics WHERE name = 'world' OR name = 'regional')"
+		"AND c.topic != (SELECT id FROM topics WHERE name = 'world')"
+		" "
+	)
+	
+	for extra_filter in ${filters[@]}
+	do
+		cat <<- SQL
+		UPDATE websites w
+		SET category = s.category, hand_classified = FALSE
+		FROM (
+			SELECT DISTINCT ON (w.id) w.id, d.category
+			FROM websites w JOIN dmoz d ON w.url = d.url
+			JOIN categories c ON d.category = c.id
+			WHERE hand_classified IS NULL ${extra_filter}
+		) s
+		WHERE s.id = w.id;
+		SQL
+	done
 	
 	# Information
 	echo 'done!' >&3
@@ -215,12 +256,12 @@ update_dmoz() {
 	SQL
 	
 	# Downloads the RDF databases
-#	for rdf in ${DMOZ_RDF[@]}
-#	do
-#		wget -qO /tmp/${rdf}.rdf.u8.gz http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz \
-#			&& gunzip /tmp/${rdf}.rdf.u8.gz \
-#			|| { error 'rdf_download' "http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz" ; }
-#	done
+	for rdf in ${DMOZ_RDF[@]}
+	do
+		wget -qO /tmp/${rdf}.rdf.u8.gz http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz \
+			&& gunzip /tmp/${rdf}.rdf.u8.gz \
+			|| { error 'rdf_download' "http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz" ; }
+	done
 	
 	# Inserts the DMOZ data in the database
 	echo 'BEGIN;'
@@ -280,12 +321,13 @@ update_dmoz() {
 	WHERE d.id IS NULL;
 	SQL
 	
-	# Remove all the downloaded RDFs
-#	rm /tmp/*.rdf.u8
+	# Removes all the downloaded RDFs
+	rm /tmp/*.rdf.u8
 	
 	return 0
 
 }
+
 # Error handling
 error() {
 
@@ -294,6 +336,12 @@ error() {
 	# Displays the error
 	echo -n 'ERROR: ' >&2
 	case $err in
+		arguments_missing)
+			echo 'Not enough arguments. 2 expected.' >&2
+			;;
+		dmoz_option)
+			echo "Unexpected DMOZ option: $2."
+			;;
 		already_processed)
 			echo "The dataset $2 has already been processed. Exiting..." >&2
 			;;
