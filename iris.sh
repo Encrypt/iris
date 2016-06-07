@@ -34,8 +34,8 @@ main() {
 	local pcap_path
 	local tmpfile
 	
-	# Checks that there are at least 2 arguments
-	[[ ${ARGS_NB} -ne 2 ]] && { error 'arguments_missing' ; return $? ; }
+	# Checks that there are at least 1 argument
+	[[ ${ARGS_NB} -lt 1 ]] && { error 'argument_missing' ; return $? ; }
 	
 	# Opens a connection to the database
 	coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
@@ -67,6 +67,9 @@ main() {
 			# And finally the websites
 			fill_websites "$pcap_path" "$tmpfile" <&${db[0]} >&${db[1]}
 			
+			# Closes the database connection
+			echo '\q' >&${db[1]}
+			
 			# Deletes the temporary file
 			rm $tmpfile
 			;;
@@ -77,11 +80,23 @@ main() {
 			[[ "${ARGS[1]}" == 'update' ]] \
 				&& update_dmoz <&${db[0]} >&${db[1]} \
 				|| { error 'dmoz_option' "${ARGS[1]}" ; return $? ; }
+				
+			# Closes the database connection
+			echo '\q' >&${db[1]}
 			;;
-	esac
 		
-	# Closes the database connection
-	echo '\q' >&${db[1]}
+		# Displays the help
+		help)
+			help
+			;;
+		
+		# Unknown argument
+		*)
+			error 'unknown_argument' "${ARGS[0]}"
+			return $?
+			;;
+		
+	esac
 	
 	return $?
 }
@@ -336,8 +351,11 @@ error() {
 	# Displays the error
 	echo -n 'ERROR: ' >&2
 	case $err in
-		arguments_missing)
-			echo 'Not enough arguments. 2 expected.' >&2
+		argument_missing)
+			echo "${PROGNAME} expects at least one argument. Run \"${PROGNAME} help\" for further help." >&2
+			;;
+		unknown_argument)
+			echo "Unknown argument $2. Run \"${PROGNAME} help\" for further help." >&2
 			;;
 		dmoz_option)
 			echo "Unexpected DMOZ option: $2."
@@ -357,6 +375,24 @@ error() {
 	esac
 
 	return 1
+}
+
+# Help about the script
+help() {
+
+	cat <<- EOF
+	Usage: ${PROGNAME} [ analyse <pcap_path> | dmoz update ]
+	
+	Operations:
+	  analyse <pcap_path>: Analyses the PCAP given as argument.
+	  dmoz update: Updates the DMOZ database used for classification.
+	  help: Displays this help.
+	
+	To analyse a PCAP, you will probably run: ./${PROGNAME} /home/me/capture.pcap
+	Please make sure that the configuration (of the database) is correct before running ${PROGNAME}.
+	EOF
+	
+	return 0
 }
 
 # Launches the main function
