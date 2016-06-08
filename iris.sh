@@ -154,7 +154,9 @@ fill_flows() {
 	# Adds the protocols not already existing in the database
 	echo 'CREATE TEMPORARY TABLE protocols_tmp (name VARCHAR(50) PRIMARY KEY);'
 	echo 'BEGIN;'
-	awk '!exists[$1]++ {print "INSERT INTO protocols_tmp VALUES (\47" tolower($1) "\47);"}' $tmpfile
+	echo 'INSERT INTO protocols_tmp (name) VALUES '
+	awk '!exists[$1]++ {print $1}' $tmpfile \
+		| awk '{nxt=1 ; while(nxt){printf "(\47%s\47)", tolower($1) ; nxt=getline ; if(nxt){print ","} else {print ";"}}}'
 	echo 'COMMIT;'
 	echo 'INSERT INTO protocols (name) SELECT t.name FROM protocols_tmp t LEFT JOIN protocols p ON t.name = p.name WHERE p.name IS NULL;'
 	
@@ -163,7 +165,8 @@ fill_flows() {
 	
 	# Insert in the database
 	echo 'BEGIN;'
-	awk -v dataset_id=${dataset_id} '{print "INSERT INTO flows VALUES (DEFAULT, " dataset_id ", NULL, (SELECT id FROM protocols WHERE name = \47" tolower($1) "\47), " $6 ", to_timestamp(" $7 "), \47" $2 "\47, \47" $3 "\47, " $4 ", " $5 ", " $8 ", " $9 ");"}' $tmpfile
+	echo 'INSERT INTO flows (dataset, protocol, transport, timestamp, endpoint_a, endpoint_b, port_a, port_b, payload_size_ab, payload_size_ba) VALUES '
+	awk -v dataset_id=${dataset_id} '{nxt=1 ; while(nxt){printf "(%s, (SELECT id FROM protocols WHERE name = \47%s\47), %s, to_timestamp(%s), \47%s\47, \47%s\47, %s, %s, %s, %s)", dataset_id, tolower($1), $6, $7, $2, $3, $4, $5, $8, $9 ; nxt=getline ; if(nxt){print ","} else {print ";"}}}' $tmpfile
 	echo 'COMMIT;'
 	
 	# Information
@@ -199,9 +202,11 @@ fill_websites() {
 	
 	# Inserts in the websites in the temporary database
 	echo 'BEGIN;'
+	echo 'INSERT INTO websites_analysis (timestamp, endpoint_a, endpoint_b, url) VALUES '
 	/usr/sbin/tcpdump -r ${pcap_path} -w - 'udp port 53' 2>/dev/null \
 		| tshark -T fields -e frame.time_epoch -e dns.a -e ip.dst -e dns.qry.name -Y 'dns.flags.response eq 1' -r - \
-		| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {print "INSERT INTO websites_analysis VALUES (DEFAULT, to_timestamp(" $1 "), \47" ip[i] "\47, \47" $3 "\47, \47" $4 "\47);"}}'
+		| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {print $1, ip[i], $3, $4}}' \
+		| awk '{nxt=1 ; while(nxt){printf "(to_timestamp(%s), \47%s\47, \47%s\47, \47%s\47)", $1, $2, $3, $4 ; nxt=getline ; if(nxt){print ","} else {print ";"}}}'
 	echo 'COMMIT;'
 	
 	# Creates a view to insert the necessary rows
@@ -280,6 +285,7 @@ update_dmoz() {
 	
 	# Inserts the DMOZ data in the database
 	echo 'BEGIN;'
+	echo 'INSERT INTO dmoz_tmp (topic, subtopic, url) VALUES '
 	for rdf in ${DMOZ_RDF[@]}
 	do
 		# Information
@@ -287,7 +293,8 @@ update_dmoz() {
 		
 		# Adds the dataset
 		sed -n 's/  <Topic r:id="\(Top\/\)\?\([^/]*\)\/\([^/]*\)">/\2 \3/p;s/    <link r:resource="https*:\/\/\([^/"]*\)\/".*/\1/p' /tmp/${rdf}.rdf.u8 \
-			| awk '{if(NF == 2){if($1 == "Top"){next} ; gsub("\47", "_") ; gsub(",", "") ; topic=$1 ; subtopic=$2} else {print "INSERT INTO dmoz_tmp VALUES (DEFAULT, \47" tolower(topic) "\47, \47" tolower(subtopic) "\47, \47" $0 "\47);"}}'
+			| awk '{if(NF == 2){if($1 == "Top"){next} ; gsub("\47", "_") ; gsub(",", "") ; topic=$1 ; subtopic=$2} else {print tolower(topic), tolower(subtopic), $0}}' \
+			| awk '{nxt=1 ; while(nxt){printf "(\47%s\47, \47%s\47, \47%s\47)", $1, $2, $3 ; nxt=getline ; if(nxt){print ","} else {print ";"}}}'
 		
 		# Information
 		echo 'done!' >&3
