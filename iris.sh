@@ -76,6 +76,9 @@ main() {
 		
 		# Updates the DMOZ database
 		dmoz)
+		
+			# Use another file descriptor for information
+			exec 3>&1
 			
 			[[ "${ARGS[1]}" == 'update' ]] \
 				&& update_dmoz <&${db[0]} >&${db[1]} \
@@ -153,10 +156,9 @@ fill_flows() {
 	
 	# Adds the protocols not already existing in the database
 	echo 'CREATE TEMPORARY TABLE protocols_tmp (name VARCHAR(50) PRIMARY KEY);'
+	echo 'PREPARE protocols_plan (VARCHAR(50)) AS INSERT INTO protocols_tmp (name) VALUES ($1);'
 	echo 'BEGIN;'
-	echo 'INSERT INTO protocols_tmp (name) VALUES '
-	awk '!exists[$1]++ {print $1}' $tmpfile \
-		| awk '{nxt=1 ; while(nxt){printf "(\47%s\47)", tolower($1) ; nxt=getline ; if(nxt){print ","} else {print ";"}}}'
+	awk '!exists[$1]++ {printf "EXECUTE protocols_plan (\47%s\47);\n", tolower($1)}' $tmpfile
 	echo 'COMMIT;'
 	echo 'INSERT INTO protocols (name) SELECT t.name FROM protocols_tmp t LEFT JOIN protocols p ON t.name = p.name WHERE p.name IS NULL;'
 	
@@ -164,9 +166,13 @@ fill_flows() {
 	echo -ne 'done!\nInsertion of the flows in the database (this may take some time)... ' >&3
 	
 	# Insert in the database
+	cat <<- 'SQL'
+	PREPARE flows_plan (INT, VARCHAR(50), SMALLINT, DOUBLE PRECISION, INET, INET, INT, INT, BIGINT, BIGINT) AS
+	INSERT INTO flows (dataset, protocol, transport, timestamp, endpoint_a, endpoint_b, port_a, port_b, payload_size_ab, payload_size_ba)
+	VALUES ($1, (SELECT id FROM protocols WHERE name = $2), $3, to_timestamp($4), $5, $6, $7, $8, $9, $10);
+	SQL
 	echo 'BEGIN;'
-	echo 'INSERT INTO flows (dataset, protocol, transport, timestamp, endpoint_a, endpoint_b, port_a, port_b, payload_size_ab, payload_size_ba) VALUES '
-	awk -v dataset_id=${dataset_id} '{nxt=1 ; while(nxt){printf "(%s, (SELECT id FROM protocols WHERE name = \47%s\47), %s, to_timestamp(%s), \47%s\47, \47%s\47, %s, %s, %s, %s)", dataset_id, tolower($1), $6, $7, $2, $3, $4, $5, $8, $9 ; nxt=getline ; if(nxt){print ","} else {print ";"}}}' $tmpfile
+	awk -v dataset_id=${dataset_id} '{printf "EXECUTE flows_plan (%s, \47%s\47, %s, %s, \47%s\47, \47%s\47, %s, %s, %s, %s);\n", dataset_id, tolower($1), $6, $7, $2, $3, $4, $5, $8, $9}' $tmpfile
 	echo 'COMMIT;'
 	
 	# Information
@@ -187,7 +193,7 @@ fill_websites() {
 	pcap_name=$(basename ${pcap_path})
 	
 	# Creates a temporary database for the websites found in the PCAP
-	cat <<- SQL
+	cat <<- 'SQL'
 	CREATE TEMPORARY TABLE websites_analysis (
 		id 			SERIAL			PRIMARY KEY,
 		timestamp	TIMESTAMP		NOT NULL,
@@ -201,12 +207,15 @@ fill_websites() {
 	echo -n 'Analysis of the websites visited... ' >&3
 	
 	# Inserts in the websites in the temporary database
+	cat <<- 'SQL'
+	PREPARE websites_plan (DOUBLE PRECISION, INET, INET, VARCHAR(255)) AS
+	INSERT INTO websites_analysis (timestamp, endpoint_a, endpoint_b, url)
+	VALUES (to_timestamp($1), $2, $3, $4);'
+	SQL
 	echo 'BEGIN;'
-	echo 'INSERT INTO websites_analysis (timestamp, endpoint_a, endpoint_b, url) VALUES '
 	/usr/sbin/tcpdump -r ${pcap_path} -w - 'udp port 53' 2>/dev/null \
 		| tshark -T fields -e frame.time_epoch -e dns.a -e ip.dst -e dns.qry.name -Y 'dns.flags.response eq 1' -r - \
-		| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {print $1, ip[i], $3, $4}}' \
-		| awk '{nxt=1 ; while(nxt){printf "(to_timestamp(%s), \47%s\47, \47%s\47, \47%s\47)", $1, $2, $3, $4 ; nxt=getline ; if(nxt){print ","} else {print ";"}}}'
+		| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {printf "EXECUTE websites_plan (%s, \47%s\47, \47%s\47, \47%s\47);\n", $1, ip[i], $3, $4}}'
 	echo 'COMMIT;'
 	
 	# Creates a view to insert the necessary rows
@@ -266,7 +275,7 @@ update_dmoz() {
 	local rdf
 	
 	# Creates the temporary tables for the update
-	cat <<- SQL
+	cat <<- 'SQL'
 	CREATE TEMPORARY TABLE dmoz_tmp (
 		id			SERIAL			PRIMARY KEY,
 		topic		VARCHAR(50)		NOT NULL,
@@ -280,12 +289,16 @@ update_dmoz() {
 	do
 		wget -qO /tmp/${rdf}.rdf.u8.gz http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz \
 			&& gunzip /tmp/${rdf}.rdf.u8.gz \
-			|| { error 'rdf_download' "http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz" ; }
+			|| { error 'rdf_download' "http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz" ; return $? ; }
 	done
 	
 	# Inserts the DMOZ data in the database
+	cat <<- 'SQL'
+	PREPARE dmoz_plan (VARCHAR(50), VARCHAR(50), VARCHAR(255)) AS
+	INSERT INTO dmoz_tmp (topic, subtopic, url)
+	VALUES ($1, $2, $3);'
+	SQL
 	echo 'BEGIN;'
-	echo 'INSERT INTO dmoz_tmp (topic, subtopic, url) VALUES '
 	for rdf in ${DMOZ_RDF[@]}
 	do
 		# Information
@@ -293,8 +306,7 @@ update_dmoz() {
 		
 		# Adds the dataset
 		sed -n 's/  <Topic r:id="\(Top\/\)\?\([^/]*\)\/\([^/]*\)">/\2 \3/p;s/    <link r:resource="https*:\/\/\([^/"]*\)\/".*/\1/p' /tmp/${rdf}.rdf.u8 \
-			| awk '{if(NF == 2){if($1 == "Top"){next} ; gsub("\47", "_") ; gsub(",", "") ; topic=$1 ; subtopic=$2} else {print tolower(topic), tolower(subtopic), $0}}' \
-			| awk '{nxt=1 ; while(nxt){printf "(\47%s\47, \47%s\47, \47%s\47)", $1, $2, $3 ; nxt=getline ; if(nxt){print ","} else {print ";"}}}'
+			| awk '{if(NF == 2){if($1 == "Top"){next} ; gsub("\47", "_") ; gsub(",", "") ; topic=$1 ; subtopic=$2} else {printf "EXECUTE dmoz_plan (\47%s\47, \47%s\47, \47%s\47);\n", tolower(topic), tolower(subtopic), $0}}'
 		
 		# Information
 		echo 'done!' >&3
@@ -307,7 +319,7 @@ update_dmoz() {
 	echo 'INSERT INTO subtopics (name) SELECT DISTINCT d.subtopic FROM dmoz_tmp d LEFT JOIN subtopics s ON d.subtopic = s.name WHERE s.name IS NULL;'
 	
 	# Fills the "categories" table
-	cat <<- SQL
+	cat <<- 'SQL'
 	INSERT INTO categories (topic, subtopic)
 	SELECT q.topic, q.subtopic
 	FROM (
@@ -325,7 +337,7 @@ update_dmoz() {
 	echo 'INSERT INTO urls (value) SELECT DISTINCT d.url FROM dmoz_tmp d LEFT JOIN urls u ON d.url = u.value WHERE u.value IS NULL;'
 	
 	# Fills the "dmoz" table
-	cat <<- SQL
+	cat <<- 'SQL'
 	INSERT INTO dmoz (url, category)
 	SELECT u.id, q.category_id
 	FROM dmoz_tmp t
