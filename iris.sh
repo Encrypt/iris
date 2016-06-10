@@ -37,12 +37,16 @@ main() {
 	# Checks that there are at least 1 argument
 	[[ ${ARGS_NB} -lt 1 ]] && { error 'argument_missing' ; return $? ; }
 	
-	# Opens a connection to the database
-	coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
-	
 	# Gets the command given
 	case ${ARGS[0]} in
-	
+		
+		# If the command implies the database...
+		analyse|dmoz)
+		
+			# ... open a connection
+			coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
+			;;&
+		
 		# Analyses a dataset
 		analyse)
 			
@@ -53,38 +57,32 @@ main() {
 			[[ -e "${pcap_path}" ]] || { error 'file_doesnt_exist' "${pcap_path}" ; return $? ; }
 			
 			# Processes the dataset
-			fill_dataset "$pcap_path" <&${db[0]} >&${db[1]}
+			fill_dataset "$pcap_path"
 			
 			# Creates a temporary file to store the results of libprotoident / ngrep
 			tmpfile=$(mktemp)
 			
-			# Use another file descriptor for information
-			exec 3>&1
-			
 			# Fills the flows table
-			fill_flows "$pcap_path" "$tmpfile" <&${db[0]} >&${db[1]}
+			fill_flows "$pcap_path" "$tmpfile"
 			
 			# And finally the websites
-			fill_websites "$pcap_path" "$tmpfile" <&${db[0]} >&${db[1]}
-			
-			# Closes the database connection
-			echo '\q' >&${db[1]}
+			fill_websites "$pcap_path" "$tmpfile"
 			
 			# Deletes the temporary file
 			rm $tmpfile
-			;;
+			;;&
 		
 		# Updates the DMOZ database
 		dmoz)
-		
-			# Use another file descriptor for information
-			exec 3>&1
 			
 			[[ "${ARGS[1]}" == 'update' ]] \
 				&& update_dmoz <&${db[0]} >&${db[1]} \
 				|| { error 'dmoz_option' "${ARGS[1]}" ; return $? ; }
-				
-			# Closes the database connection
+			;;&
+			
+		# Closes the database connection
+		analyse|dmoz)
+			
 			echo '\q' >&${db[1]}
 			;;
 		
@@ -117,12 +115,12 @@ fill_dataset() {
 	timestamp=$(date '+%F %T')
 	
 	# Inserts the new dataset in the database if has not already been added
-	echo "INSERT INTO datasets VALUES (DEFAULT, '${pcap_name}', '${pcap_md5}', '${timestamp}'); \echo EOF"
+	echo "INSERT INTO datasets VALUES (DEFAULT, '${pcap_name}', '${pcap_md5}', '${timestamp}'); \echo EOF" >&${db[1]}
 	while read line
 	do
 		[[ "$line" == 'ERROR'* ]] && { echo '\q' ; error 'already_processed' "${pcap_name}" ; return $? ; }
 		[[ "$line" == 'EOF' ]] && break
-	done
+	done <&${db[0]}
 	
 	return 0
 }
@@ -136,47 +134,47 @@ fill_flows() {
 	local protocols protocol ids
 
 	# Information
-	echo -n 'Retrieving the dataset ID from the database... ' >&3
+	echo -n 'Retrieving the dataset ID from the database... '
 	
 	# Gets the ID corresponding to the previous insert statement
-	echo 'SELECT id FROM datasets ORDER BY added DESC LIMIT 1; \echo EOF'
+	echo 'SELECT id FROM datasets ORDER BY added DESC LIMIT 1; \echo EOF' >&${db[1]}
 	while read line
 	do
 		[[ "$line" != 'EOF' ]] && dataset_id="$line" || break
-	done
+	done <&${db[0]}
 	
 	# Information
-	echo -ne 'done!\nAnalysis of the flows of the PCAP in progress... ' >&3
+	echo -ne 'done!\nAnalysis of the flows of the PCAP in progress... '
 	
 	# Processes the PCAP file
 	lpi_protoident "pcap:${pcap_path}" > $tmpfile 2>/dev/null
 	
 	# Information
-	echo -ne 'done!\nInsertion of the new protocols in the database... ' >&3
+	echo -ne 'done!\nInsertion of the new protocols in the database... '
 	
 	# Adds the protocols not already existing in the database
-	echo 'CREATE TEMPORARY TABLE protocols_tmp (name VARCHAR(50) PRIMARY KEY);'
-	echo 'PREPARE protocols_plan (VARCHAR(50)) AS INSERT INTO protocols_tmp (name) VALUES ($1);'
-	echo 'BEGIN;'
-	awk '!exists[$1]++ {printf "EXECUTE protocols_plan (\47%s\47);\n", tolower($1)}' $tmpfile
-	echo 'COMMIT;'
-	echo 'INSERT INTO protocols (name) SELECT t.name FROM protocols_tmp t LEFT JOIN protocols p ON t.name = p.name WHERE p.name IS NULL;'
+	exec_sql 'CREATE TEMPORARY TABLE protocols_tmp (name VARCHAR(50) PRIMARY KEY);'
+	exec_sql 'PREPARE protocols_plan (VARCHAR(50)) AS INSERT INTO protocols_tmp (name) VALUES ($1);'
+	exec_sql 'BEGIN;'
+	awk '!exists[$1]++ {printf "EXECUTE protocols_plan (\47%s\47);\n", tolower($1)}' $tmpfile >&${db[1]}
+	exec_sql 'COMMIT;'
+	exec_sql 'INSERT INTO protocols (name) SELECT t.name FROM protocols_tmp t LEFT JOIN protocols p ON t.name = p.name WHERE p.name IS NULL;'
 	
 	# Information
-	echo -ne 'done!\nInsertion of the flows in the database (this may take some time)... ' >&3
+	echo -ne 'done!\nInsertion of the flows in the database (this may take some time)... '
 	
 	# Insert in the database
-	cat <<- 'SQL'
+	exec_sql <<- 'SQL'
 	PREPARE flows_plan (INT, VARCHAR(50), SMALLINT, DOUBLE PRECISION, INET, INET, INT, INT, BIGINT, BIGINT) AS
 	INSERT INTO flows (dataset, protocol, transport, timestamp, endpoint_a, endpoint_b, port_a, port_b, payload_size_ab, payload_size_ba)
 	VALUES ($1, (SELECT id FROM protocols WHERE name = $2), $3, to_timestamp($4), $5, $6, $7, $8, $9, $10);
 	SQL
-	echo 'BEGIN;'
-	awk -v dataset_id=${dataset_id} '{printf "EXECUTE flows_plan (%s, \47%s\47, %s, %s, \47%s\47, \47%s\47, %s, %s, %s, %s);\n", dataset_id, tolower($1), $6, $7, $2, $3, $4, $5, $8, $9}' $tmpfile
-	echo 'COMMIT;'
+	exec_sql 'BEGIN;'
+	awk -v dataset_id=${dataset_id} '{printf "EXECUTE flows_plan (%s, \47%s\47, %s, %s, \47%s\47, \47%s\47, %s, %s, %s, %s);\n", dataset_id, tolower($1), $6, $7, $2, $3, $4, $5, $8, $9}' $tmpfile >&${db[1]}
+	exec_sql 'COMMIT;'
 	
 	# Information
-	echo 'done!' >&3
+	echo 'done!'
 	
 	return 0
 }
@@ -193,7 +191,7 @@ fill_websites() {
 	pcap_name=$(basename ${pcap_path})
 	
 	# Creates a temporary database for the websites found in the PCAP
-	cat <<- 'SQL'
+	exec_sql <<- 'SQL'
 	CREATE TEMPORARY TABLE websites_analysis (
 		id 			SERIAL			PRIMARY KEY,
 		timestamp	TIMESTAMP		NOT NULL,
@@ -204,22 +202,24 @@ fill_websites() {
 	SQL
 	
 	# Information
-	echo -n 'Analysis of the websites visited... ' >&3
+	echo -n 'Analysis of the websites visited... '
 	
 	# Inserts in the websites in the temporary database
-	cat <<- 'SQL'
+	exec_sql <<- 'SQL'
 	PREPARE websites_plan (DOUBLE PRECISION, INET, INET, VARCHAR(255)) AS
 	INSERT INTO websites_analysis (timestamp, endpoint_a, endpoint_b, url)
-	VALUES (to_timestamp($1), $2, $3, $4);'
+	VALUES (to_timestamp($1), $2, $3, $4);
 	SQL
-	echo 'BEGIN;'
-	/usr/sbin/tcpdump -r ${pcap_path} -w - 'udp port 53' 2>/dev/null \
-		| tshark -T fields -e frame.time_epoch -e dns.a -e ip.dst -e dns.qry.name -Y 'dns.flags.response eq 1' -r - \
-		| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {printf "EXECUTE websites_plan (%s, \47%s\47, \47%s\47, \47%s\47);\n", $1, ip[i], $3, $4}}'
-	echo 'COMMIT;'
+	exec_sql 'BEGIN;'
+	{
+		/usr/sbin/tcpdump -r ${pcap_path} -w - 'udp port 53' 2>/dev/null \
+			| tshark -T fields -e frame.time_epoch -e dns.a -e ip.dst -e dns.qry.name -Y 'dns.flags.response eq 1' -r - \
+			| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {printf "EXECUTE websites_plan (%s, \47%s\47, \47%s\47, \47%s\47);\n", $1, ip[i], $3, $4}}'
+	} >&${db[1]}
+	exec_sql 'COMMIT;'
 	
 	# Creates a view to insert the necessary rows
-	cat <<- SQL
+	exec_sql <<- SQL
 	CREATE TEMPORARY VIEW websites_view AS
 	SELECT DISTINCT ON (f.id) f.id AS flow_id, u.id AS url_id, a.url as url_value, (f.timestamp - a.timestamp) AS tstamp_diff
 	FROM flows f
@@ -232,24 +232,22 @@ fill_websites() {
 	SQL
 	
 	# Inserts the URLs of the websites which do not yet exist in "websites"
-	echo 'INSERT INTO urls (value) SELECT DISTINCT url_value FROM websites_view WHERE url_id IS NULL;'
+	exec_sql 'INSERT INTO urls (value) SELECT DISTINCT url_value FROM websites_view WHERE url_id IS NULL;'
 	
 	# Inserts the identified websites in the database
-	echo 'INSERT INTO websites (url) SELECT DISTINCT v.url_id FROM websites_view v LEFT JOIN websites w ON v.url_id = w.url WHERE w.url IS NULL;'
+	exec_sql 'INSERT INTO websites (url) SELECT DISTINCT v.url_id FROM websites_view v LEFT JOIN websites w ON v.url_id = w.url WHERE w.url IS NULL AND v.url_id IS NOT NULL;'
 	
 	# Update the flows with the websites added
-	echo 'UPDATE flows f SET website = w.id FROM websites_view v JOIN websites w ON w.url = v.url_id WHERE f.id = v.flow_id;'
+	exec_sql 'UPDATE flows f SET website = w.id FROM websites_view v JOIN websites w ON w.url = v.url_id WHERE f.id = v.flow_id;'
 	
 	# Automatically try to set a category to the new websites
-	filters=(
-		"AND c.topic NOT IN (SELECT id FROM topics WHERE name = 'world' OR name = 'regional')"
-		"AND c.topic != (SELECT id FROM topics WHERE name = 'world')"
-		" "
-	)
+	filters+=("AND c.topic NOT IN (SELECT id FROM topics WHERE name = 'world' OR name = 'regional')")
+	filters+=("AND c.topic != (SELECT id FROM topics WHERE name = 'world')")
+	filters+=(" ")
 	
-	for extra_filter in ${filters[@]}
+	for extra_filter in "${filters[@]}"
 	do
-		cat <<- SQL
+		exec_sql <<- SQL
 		UPDATE websites w
 		SET category = s.category, hand_classified = FALSE
 		FROM (
@@ -263,7 +261,7 @@ fill_websites() {
 	done
 	
 	# Information
-	echo 'done!' >&3
+	echo 'done!'
 	
 	return 0
 }
@@ -275,7 +273,7 @@ update_dmoz() {
 	local rdf
 	
 	# Creates the temporary tables for the update
-	cat <<- 'SQL'
+	exec_sql <<- 'SQL'
 	CREATE TEMPORARY TABLE dmoz_tmp (
 		id			SERIAL			PRIMARY KEY,
 		topic		VARCHAR(50)		NOT NULL,
@@ -293,33 +291,35 @@ update_dmoz() {
 	done
 	
 	# Inserts the DMOZ data in the database
-	cat <<- 'SQL'
+	exec_sql <<- 'SQL'
 	PREPARE dmoz_plan (VARCHAR(50), VARCHAR(50), VARCHAR(255)) AS
 	INSERT INTO dmoz_tmp (topic, subtopic, url)
 	VALUES ($1, $2, $3);'
 	SQL
-	echo 'BEGIN;'
+	exec_sql 'BEGIN;'
 	for rdf in ${DMOZ_RDF[@]}
 	do
 		# Information
-		echo -n "Now adding the dataset ${rdf}... " >&3
+		echo -n "Now adding the dataset ${rdf}... "
 		
 		# Adds the dataset
-		sed -n 's/  <Topic r:id="\(Top\/\)\?\([^/]*\)\/\([^/]*\)">/\2 \3/p;s/    <link r:resource="https*:\/\/\([^/"]*\)\/".*/\1/p' /tmp/${rdf}.rdf.u8 \
-			| awk '{if(NF == 2){if($1 == "Top"){next} ; gsub("\47", "_") ; gsub(",", "") ; topic=$1 ; subtopic=$2} else {printf "EXECUTE dmoz_plan (\47%s\47, \47%s\47, \47%s\47);\n", tolower(topic), tolower(subtopic), $0}}'
+		{
+			sed -n 's/  <Topic r:id="\(Top\/\)\?\([^/]*\)\/\([^/]*\)">/\2 \3/p;s/    <link r:resource="https*:\/\/\([^/"]*\)\/".*/\1/p' /tmp/${rdf}.rdf.u8 \
+				| awk '{if(NF == 2){if($1 == "Top"){next} ; gsub("\47", "_") ; gsub(",", "") ; topic=$1 ; subtopic=$2} else {printf "EXECUTE dmoz_plan (\47%s\47, \47%s\47, \47%s\47);\n", tolower(topic), tolower(subtopic), $0}}'
+		} >&${db[1]}
 		
 		# Information
-		echo 'done!' >&3
+		echo 'done!'
 		
 	done
-	echo 'COMMIT;'
+	exec_sql 'COMMIT;'
 	
 	# Fills the "topics" and "suptopics" tables
-	echo 'INSERT INTO topics (name) SELECT DISTINCT d.topic FROM dmoz_tmp d LEFT JOIN topics t ON d.topic = t.name WHERE t.name IS NULL;'
-	echo 'INSERT INTO subtopics (name) SELECT DISTINCT d.subtopic FROM dmoz_tmp d LEFT JOIN subtopics s ON d.subtopic = s.name WHERE s.name IS NULL;'
+	exec_sql 'INSERT INTO topics (name) SELECT DISTINCT d.topic FROM dmoz_tmp d LEFT JOIN topics t ON d.topic = t.name WHERE t.name IS NULL;'
+	exec_sql 'INSERT INTO subtopics (name) SELECT DISTINCT d.subtopic FROM dmoz_tmp d LEFT JOIN subtopics s ON d.subtopic = s.name WHERE s.name IS NULL;'
 	
 	# Fills the "categories" table
-	cat <<- 'SQL'
+	exec_sql <<- 'SQL'
 	INSERT INTO categories (topic, subtopic)
 	SELECT q.topic, q.subtopic
 	FROM (
@@ -334,10 +334,10 @@ update_dmoz() {
 	SQL
 	
 	# Fills the "urls" table
-	echo 'INSERT INTO urls (value) SELECT DISTINCT d.url FROM dmoz_tmp d LEFT JOIN urls u ON d.url = u.value WHERE u.value IS NULL;'
+	exec_sql 'INSERT INTO urls (value) SELECT DISTINCT d.url FROM dmoz_tmp d LEFT JOIN urls u ON d.url = u.value WHERE u.value IS NULL;'
 	
 	# Fills the "dmoz" table
-	cat <<- 'SQL'
+	exec_sql <<- 'SQL'
 	INSERT INTO dmoz (url, category)
 	SELECT u.id, q.category_id
 	FROM dmoz_tmp t
@@ -362,6 +362,49 @@ update_dmoz() {
 
 }
 
+# Executes SQL
+exec_sql() {
+
+	# Local variables
+	local argument=$1
+	local line
+	
+	# If an argument is given, simply echoes it
+	if [[ -n "$argument" ]]
+	then
+		echo "$argument" >&${db[1]}
+	
+	# Else, it's a here-document, reads it
+	else
+		while read line
+		do
+			echo "$line" >&${db[1]}
+		done
+	fi
+	
+	# Sends an "EOF" string to be returned once it finishes
+	echo '\echo EOF' >&${db[1]}
+	
+	# Reads the output of the server
+	while read line
+	do
+		case $line in
+			EOF)
+				break
+				;;
+			ERROR:*|DETAIL:*)
+				error 'database_error' "$line"
+				;;
+			*)
+				echo "INFO: Unexpected database output: $line"
+				;;
+		esac
+	done <&${db[0]}
+	
+	return
+}
+
+
 # Error handling
 error() {
 
@@ -381,6 +424,9 @@ error() {
 			;;
 		already_processed)
 			echo "The dataset $2 has already been processed. Exiting..." >&2
+			;;
+		database_error)
+			echo "The database returned the following error during a statement execution: \"$2\"" >&2
 			;;
 		file_doesnt_exist)
 			echo "The file $2 doesn't not exist on the disk. Exiting..." >&2
