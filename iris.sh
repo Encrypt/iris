@@ -76,7 +76,7 @@ main() {
 		dmoz)
 			
 			[[ "${ARGS[1]}" == 'update' ]] \
-				&& update_dmoz <&${db[0]} >&${db[1]} \
+				&& update_dmoz \
 				|| { error 'dmoz_option' "${ARGS[1]}" ; return $? ; }
 			;;&
 			
@@ -272,6 +272,13 @@ update_dmoz() {
 	# Local variables
 	local rdf
 	
+	# Removes previous RDFs if there is any
+	for rdf in ${DMOZ_RDF[@]}
+	do
+		[[ -e "/tmp/${rdf}.rdf.u8.gz" ]] && rm /tmp/${rdf}.rdf.u8.gz
+		[[ -e "/tmp/${rdf}.rdf.u8" ]] && rm /tmp/${rdf}.rdf.u8
+	done
+	
 	# Creates the temporary tables for the update
 	exec_sql <<- 'SQL'
 	CREATE TEMPORARY TABLE dmoz_tmp (
@@ -285,22 +292,31 @@ update_dmoz() {
 	# Downloads the RDF databases
 	for rdf in ${DMOZ_RDF[@]}
 	do
+		
+		# Information
+		echo -n "Now downloading the dataset ${rdf}.rdf.u8.gz... "
+		
+		# Downloads the database and ungzips it
 		wget -qO /tmp/${rdf}.rdf.u8.gz http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz \
 			&& gunzip /tmp/${rdf}.rdf.u8.gz \
 			|| { error 'rdf_download' "http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz" ; return $? ; }
+		
+		# Information
+		echo 'done!'
+		
 	done
 	
 	# Inserts the DMOZ data in the database
 	exec_sql <<- 'SQL'
 	PREPARE dmoz_plan (VARCHAR(50), VARCHAR(50), VARCHAR(255)) AS
 	INSERT INTO dmoz_tmp (topic, subtopic, url)
-	VALUES ($1, $2, $3);'
+	VALUES ($1, $2, $3);
 	SQL
 	exec_sql 'BEGIN;'
 	for rdf in ${DMOZ_RDF[@]}
 	do
 		# Information
-		echo -n "Now adding the dataset ${rdf}... "
+		echo -n "Now adding the dataset ${rdf}.rdf.u8 to the database... "
 		
 		# Adds the dataset
 		{
@@ -356,7 +372,11 @@ update_dmoz() {
 	SQL
 	
 	# Removes all the downloaded RDFs
-	rm /tmp/*.rdf.u8
+	for rdf in ${DMOZ_RDF[@]}
+	do
+		[[ -e "/tmp/${rdf}.rdf.u8.gz" ]] && rm /tmp/${rdf}.rdf.u8.gz
+		[[ -e "/tmp/${rdf}.rdf.u8" ]] && rm /tmp/${rdf}.rdf.u8
+	done
 	
 	return 0
 
@@ -394,6 +414,7 @@ exec_sql() {
 				;;
 			ERROR:*|DETAIL:*)
 				error 'database_error' "$line"
+				return $?
 				;;
 			*)
 				echo "INFO: Unexpected database output: $line"
@@ -401,7 +422,7 @@ exec_sql() {
 		esac
 	done <&${db[0]}
 	
-	return
+	return 0
 }
 
 
