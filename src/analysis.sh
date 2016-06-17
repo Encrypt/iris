@@ -28,10 +28,17 @@ fill_dataset() {
 fill_flows() {
 	
 	# Local variables
-	local pcap_path=$1 tmpfile=$2
-	local line dataset_id
+	local pcap_path=$1
+	local tmpfiles line dataset_id
 	local protocols protocol ids
-
+	local lpi_pids
+	
+	# Creates 3 temporary files for lpi_arff and lpi_protoident and both merged
+	for i in {0..2}
+	do
+		tmpfiles+=($(mktemp))
+	done
+	
 	# Information
 	echo -n 'Retrieving the dataset ID from the database... '
 	
@@ -45,9 +52,30 @@ fill_flows() {
 	# Information
 	echo -ne 'done!\nAnalysis of the flows of the PCAP in progress... '
 	
-	# Processes the PCAP file
-	lpi_protoident "pcap:${pcap_path}" > $tmpfile 2>/dev/null
+	# Processes the PCAP file with lpi_protoident
+	# Extracts: protocol, endpoint_a, endpoint_b, port_a, port_b, transport
+	{
+		lpi_protoident "pcap:${pcap_path}" 2>/dev/null \
+			| awk '{print $1, $2, $3, $4, $5, $6}' \
+			> ${tmpfiles[0]}
+	} &
+	lpi_pids+=($!)
 	
+	# Does the same with lpi_arff to get more info about the flows
+	# Extracts: timestamp, duration, payload_size_ab, payload_size_ba, packets_nb_ab, packets_nb_ba
+	{
+		lpi_arff "pcap:${pcap_path}" 2>/dev/null \
+			| awk -F ',' '{if(NF == 24) {print $24, $23, $4, $6, $5, $7}}' \
+			> ${tmpfiles[1]}
+	} &
+	lpi_pids+=($!)
+	
+	# Waits for the analysis tools to finish
+	wait ${lpi_pids[@]}
+	
+	# Merge both analyses
+	paste -d ' ' "${tmpfiles[0]}" "${tmpfiles[1]}" > ${tmpfiles[2]}
+		
 	# Information
 	echo -ne 'done!\nInsertion of the new protocols in the database... '
 	
@@ -55,7 +83,7 @@ fill_flows() {
 	exec_sql 'CREATE TEMPORARY TABLE protocols_tmp (name VARCHAR(50) PRIMARY KEY);'
 	exec_sql 'PREPARE protocols_plan (VARCHAR(50)) AS INSERT INTO protocols_tmp (name) VALUES ($1);'
 	exec_sql 'BEGIN;'
-	awk '!exists[$1]++ {printf "EXECUTE protocols_plan (\47%s\47);\n", tolower($1)}' $tmpfile >&${db[1]}
+	awk '!exists[$1]++ {printf "EXECUTE protocols_plan (\47%s\47);\n", tolower($1)}' ${tmpfiles[2]} >&${db[1]}
 	exec_sql 'COMMIT;'
 	exec_sql 'INSERT INTO protocols (name) SELECT t.name FROM protocols_tmp t LEFT JOIN protocols p ON t.name = p.name WHERE p.name IS NULL;'
 	
@@ -64,16 +92,19 @@ fill_flows() {
 	
 	# Insert in the database
 	exec_sql <<- 'SQL'
-	PREPARE flows_plan (INT, VARCHAR(50), SMALLINT, DOUBLE PRECISION, INET, INET, INT, INT, BIGINT, BIGINT) AS
-	INSERT INTO flows (dataset, protocol, transport, timestamp, endpoint_a, endpoint_b, port_a, port_b, payload_size_ab, payload_size_ba)
-	VALUES ($1, (SELECT id FROM protocols WHERE name = $2), $3, to_timestamp($4), $5, $6, $7, $8, $9, $10);
+	PREPARE flows_plan (INT, VARCHAR(50), SMALLINT, DOUBLE PRECISION, BIGINT, INET, INET, INT, INT, BIGINT, BIGINT, INT, INT) AS
+	INSERT INTO flows (dataset, protocol, transport, timestamp, duration, endpoint_a, endpoint_b, port_a, port_b, payload_size_ab, payload_size_ba, packets_nb_ab, packets_nb_ba)
+	VALUES ($1, (SELECT id FROM protocols WHERE name = $2), $3, to_timestamp($4), $5, $6, $7, $8, $9, $10, $11, $12, $13);
 	SQL
 	exec_sql 'BEGIN;'
-	awk -v dataset_id=${dataset_id} '{printf "EXECUTE flows_plan (%s, \47%s\47, %s, %s, \47%s\47, \47%s\47, %s, %s, %s, %s);\n", dataset_id, tolower($1), $6, $7, $2, $3, $4, $5, $8, $9}' $tmpfile >&${db[1]}
+	awk -v dataset_id=${dataset_id} '{printf "EXECUTE flows_plan (%s, \47%s\47, %s, %s, %s, \47%s\47, \47%s\47, %s, %s, %s, %s, %s, %s);\n", dataset_id, tolower($1), $6, $7, $8, $2, $3, $4, $5, $9, $10, $11, $12}' ${tmpfiles[2]} >&${db[1]}
 	exec_sql 'COMMIT;'
 	
 	# Information
 	echo 'done!'
+	
+	# Deletes the temporary files
+	rm ${tmpfiles[@]}
 	
 	return 0
 }
@@ -82,9 +113,12 @@ fill_flows() {
 fill_websites() {
 	
 	# Local variables
-	local pcap_path=$1 tmpfile=$2
-	local pcap_name
+	local pcap_path=$1
+	local pcap_name tmpfile
 	local filters extra_filter
+	
+	# Creates a temporary file
+	tmpfile=$(mktemp)
 	
 	# Gets the basename of the PCAP
 	pcap_name=$(basename ${pcap_path})
@@ -113,7 +147,7 @@ fill_websites() {
 	{
 		/usr/sbin/tcpdump -r ${pcap_path} -w - 'udp port 53' 2>/dev/null \
 			| tshark -T fields -e frame.time_epoch -e dns.a -e ip.dst -e dns.qry.name -Y 'dns.flags.response eq 1' -r - \
-			| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 14) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {printf "EXECUTE websites_plan (%s, \47%s\47, \47%s\47, \47%s\47);\n", $1, ip[i], $3, $4}}'
+			| awk '{if(NF != 4){next} ; $1 = substr($1, 1, 17) ; ip_nb = split($2, ip, ",") ; for(i = 1 ; i < ip_nb ; i++) {printf "EXECUTE websites_plan (%s, \47%s\47, \47%s\47, \47%s\47);\n", $1, ip[i], $3, $4}}'
 	} >&${db[1]}
 	exec_sql 'COMMIT;'
 	
@@ -161,6 +195,9 @@ fill_websites() {
 	
 	# Information
 	echo 'done!'
+	
+	# Deletes the temporary file
+	rm $tmpfile
 	
 	return 0
 }

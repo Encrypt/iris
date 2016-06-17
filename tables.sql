@@ -58,15 +58,15 @@ CREATE TABLE flows (
 	dataset			INT			NOT NULL REFERENCES datasets(id),
 	website			INT			REFERENCES websites(id),
 	protocol		INT			NOT NULL,
-	transport		SMALLINT	NOT NULL,
+	transport 		SMALLINT	NOT NULL,
 	timestamp		TIMESTAMP	NOT NULL,
+	duration		BIGINT		NOT NULL,
 	endpoint_a		INET		NOT NULL,
 	endpoint_b		INET		NOT NULL,
 	port_a			INT			NOT NULL,
 	port_b			INT			NOT NULL,
 	payload_size_ab	BIGINT		NOT NULL,
-	payload_size_ba	BIGINT		NOT NULL
+	payload_size_ba	BIGINT		NOT NULL,
+	packets_nb_ab	BIGINT		NOT NULL,
+	packets_nb_ba	BIGINT		NOT NULL
 );
-
--- Index needed for the "complex" joins
-CREATE INDEX ON flows (endpoint_a, timestamp);

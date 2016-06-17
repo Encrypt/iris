@@ -65,17 +65,11 @@ main() {
 			# Processes the dataset
 			fill_dataset "$pcap_path" || return $?
 			
-			# Creates a temporary file to store the results of libprotoident / ngrep
-			tmpfile=$(mktemp)
-			
 			# Fills the flows table
-			fill_flows "$pcap_path" "$tmpfile" || return $?
+			fill_flows "$pcap_path" || return $?
 			
 			# And finally the websites
-			fill_websites "$pcap_path" "$tmpfile" || return $?
-			
-			# Deletes the temporary file
-			rm $tmpfile
+			fill_websites "$pcap_path" || return $?
 			;;&
 		
 		# Updates the DMOZ database
@@ -105,7 +99,7 @@ main() {
 		
 	esac
 	
-	return $?
+	return 0
 }
 
 # Launches the main function
