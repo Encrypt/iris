@@ -173,7 +173,20 @@ fill_websites() {
 	# Update the flows with the websites added
 	exec_sql 'UPDATE flows f SET website = w.id FROM websites_view v JOIN websites w ON w.url = v.url_id WHERE f.id = v.flow_id;'
 	
-	# Automatically try to set a category to the new websites
+	# Automatically detect advertisement websites
+	exec_sql <<- SQL
+	UPDATE websites w
+	SET category = s.category, hand_classified = FALSE
+	FROM (
+		SELECT w.id, a.category
+		FROM websites w JOIN ads a ON w.url = a.url
+		JOIN categories c ON a.category = c.id
+		WHERE hand_classified IS NULL
+	) s
+	WHERE s.id = w.id;
+	SQL
+	
+	# Automatically try to set a category to the new websites using DMOZ
 	filters+=("AND c.topic NOT IN (SELECT id FROM topics WHERE name = 'world' OR name = 'regional')")
 	filters+=("AND c.topic != (SELECT id FROM topics WHERE name = 'world')")
 	filters+=(" ")

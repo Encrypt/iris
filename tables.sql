@@ -39,9 +39,16 @@ CREATE TABLE urls (
 
 -- DMOZ database
 CREATE TABLE dmoz (
-	id				SERIAL	PRIMARY KEY,
-	url				INT		NOT NULL REFERENCES urls(id),
-	category		INT		NOT NULL REFERENCES categories(id)
+	id			SERIAL	PRIMARY KEY,
+	url			INT		NOT NULL REFERENCES urls(id),
+	category	INT		NOT NULL REFERENCES categories(id)
+);
+
+-- Ads database
+CREATE TABLE ads (
+	id			SERIAL	PRIMARY KEY,
+	url			INT		NOT NULL REFERENCES urls(id),
+	category	INT		NOT NULL REFERENCES categories(id)
 );
 
 -- Websites visited by the users
@@ -70,3 +77,7 @@ CREATE TABLE flows (
 	packets_nb_ab	BIGINT		NOT NULL,
 	packets_nb_ba	BIGINT		NOT NULL
 );
+
+-- Inserts the ads and cdn categories
+INSERT INTO topics (name) VALUES ('ads'), ('cdn');
+INSERT INTO categories (topic) SELECT id FROM topics WHERE name = 'ads' OR name = 'cdn';

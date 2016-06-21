@@ -47,7 +47,7 @@ main() {
 	case ${ARGS[0]} in
 		
 		# If the command implies the database...
-		analyse|dmoz)
+		analyse|dmoz|ads)
 		
 			# ... open a connection
 			coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
@@ -79,9 +79,16 @@ main() {
 				&& update_dmoz \
 				|| { error 'dmoz_option' "${ARGS[1]}" ; return $? ; }
 			;;&
-			
+		
+		# Updates the ads database
+		ads)
+		
+			[[ "${ARGS[1]}" == 'update' ]] \
+				&& update_ads
+			;;&
+		
 		# Closes the database connection
-		analyse|dmoz)
+		analyse|dmoz|ads)
 			
 			echo '\q' >&${db[1]}
 			;;

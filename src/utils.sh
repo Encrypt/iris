@@ -72,7 +72,10 @@ error() {
 			echo "The file $2 doesn't not exist on the disk. Exiting..." >&2
 			;;
 		rdf_download)
-			echo "Error when trying to download the RDF: $2." >&2
+			echo "Could not download the RDF: $2." >&2
+			;;
+		ads_download)
+			echo "Could not download the ads dataset at address $2." >&2
 			;;
 		*)
 			echo "Unrecognized error: $err" >&2

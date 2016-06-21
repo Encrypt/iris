@@ -1,5 +1,5 @@
 # File: dmoz.sh
-# Content: Function to update the DMOZ database of IRIS
+# Content: Function to update the DMOZ & ads databases of IRIS
 
 # Updates DMOZ categories & database
 update_dmoz() {
@@ -112,6 +112,70 @@ update_dmoz() {
 		[[ -e "/tmp/${rdf}.rdf.u8.gz" ]] && rm /tmp/${rdf}.rdf.u8.gz
 		[[ -e "/tmp/${rdf}.rdf.u8" ]] && rm /tmp/${rdf}.rdf.u8
 	done
+	
+	return 0
+}
+
+# Updates the ads database
+update_ads() {
+	
+	# Removes previous download if there is any
+	[[ -e "/tmp/ad_servers.txt" ]] && rm /tmp/ad_servers.txt
+	
+	# Creates the temporary tables for the update
+	exec_sql <<- 'SQL'
+	CREATE TEMPORARY TABLE ads_tmp (
+		id			SERIAL			PRIMARY KEY,
+		url			VARCHAR(255)	NOT NULL
+	);
+	SQL
+	
+	# Information
+	echo -n "Now downloading the dataset ${rdf}.rdf.u8.gz... "	
+	
+	# Downloads the ads file provided by http://hosts-file.net
+	wget -qO /tmp/ad_servers.txt http://hosts-file.net/ad_servers.txt \
+		|| { error 'ads_download' "http://hosts-file.net/ad_servers.txt" ; return $? ; }
+		
+	# Information
+	echo -ne 'done!\nInsertion of the ad urls in the database... '
+	
+	# Inserts the ads data in the database
+	exec_sql <<- 'SQL'
+	PREPARE ads_plan (VARCHAR(255)) AS
+	INSERT INTO ads_tmp (url)
+	VALUES ($1);
+	SQL
+	exec_sql 'BEGIN;'
+	awk '{if(NF == 2 && $1 == "127.0.0.1"){sub(/\015/,"") ; printf "EXECUTE ads_plan (\47%s\47);\n", $2}}' /tmp/ad_servers.txt >&${db[1]}
+	exec_sql 'COMMIT;'
+	
+	# Fills the "urls" table
+	exec_sql 'INSERT INTO urls (value) SELECT DISTINCT a.url FROM ads_tmp a LEFT JOIN urls u ON a.url = u.value WHERE u.value IS NULL;'
+	
+	# Fills the "ads" table
+	exec_sql <<- 'SQL'
+	INSERT INTO ads (url, category)
+	SELECT q.url, q.category FROM (
+		SELECT * FROM (
+			SELECT u.id as url
+			FROM ads_tmp t
+			JOIN urls u ON u.value = t.url
+		) a
+		CROSS JOIN (
+			SELECT id as category
+			FROM categories
+			WHERE topic = (SELECT id FROM topics WHERE name = 'ads')
+			AND subtopic IS NULL
+		) b
+	) q
+	LEFT JOIN ads a
+	ON a.url = q.url
+	WHERE a.url IS NULL;
+	SQL
+	
+	# Removes all the downloaded ads file
+	rm /tmp/ad_servers.txt
 	
 	return 0
 }
