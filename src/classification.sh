@@ -1,181 +1,187 @@
-# File: dmoz.sh
-# Content: Function to update the DMOZ & ads databases of IRIS
+# File: classification.sh
+# Content: Functions dealing with the HTTP(S) flows classification
 
-# Updates DMOZ categories & database
-update_dmoz() {
+# Resets the classification
+reset_classification() {
 
-	# Local variables
-	local rdf
-	
-	# Removes previous RDFs if there is any
-	for rdf in ${DMOZ_RDF[@]}
-	do
-		[[ -e "/tmp/${rdf}.rdf.u8.gz" ]] && rm /tmp/${rdf}.rdf.u8.gz
-		[[ -e "/tmp/${rdf}.rdf.u8" ]] && rm /tmp/${rdf}.rdf.u8
-	done
-	
-	# Creates the temporary tables for the update
+	echo -n 'Resetting of the websites classification... '
+
 	exec_sql <<- 'SQL'
-	CREATE TEMPORARY TABLE dmoz_tmp (
-		id			SERIAL			PRIMARY KEY,
-		topic		VARCHAR(50)		NOT NULL,
-		subtopic	VARCHAR(50)		NOT NULL,
-		url			VARCHAR(255)	NOT NULL
-	);
+	UPDATE websites
+	SET category = NULL, hand_classified = NULL
+	WHERE hand_classified IS NOT NULL
+		OR category IS NOT NULL;
 	SQL
 	
-	# Downloads the RDF databases
-	for rdf in ${DMOZ_RDF[@]}
-	do
-		
-		# Information
-		echo -n "Now downloading the dataset ${rdf}.rdf.u8.gz... "
-		
-		# Downloads the database and ungzips it
-		wget -qO /tmp/${rdf}.rdf.u8.gz http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz \
-			&& gunzip /tmp/${rdf}.rdf.u8.gz \
-			|| { error 'rdf_download' "http://rdf.dmoz.org/rdf/${rdf}.rdf.u8.gz" ; return $? ; }
-		
-		# Information
-		echo 'done!'
-		
-	done
-	
-	# Inserts the DMOZ data in the database
-	exec_sql <<- 'SQL'
-	PREPARE dmoz_plan (VARCHAR(50), VARCHAR(50), VARCHAR(255)) AS
-	INSERT INTO dmoz_tmp (topic, subtopic, url)
-	VALUES ($1, $2, $3);
-	SQL
-	exec_sql 'BEGIN;'
-	for rdf in ${DMOZ_RDF[@]}
-	do
-		# Information
-		echo -n "Now adding the dataset ${rdf}.rdf.u8 to the database... "
-		
-		# Adds the dataset
-		{
-			sed -n 's/  <Topic r:id="\(Top\/\)\?\([^/]*\)\/\([^/]*\)">/\2 \3/p;s/    <link r:resource="https*:\/\/\([^/"]*\)\/".*/\1/p' /tmp/${rdf}.rdf.u8 \
-				| awk '{if(NF == 2){if($1 == "Top"){next} ; gsub("\47", "_") ; gsub(",", "") ; topic=$1 ; subtopic=$2} else {printf "EXECUTE dmoz_plan (\47%s\47, \47%s\47, \47%s\47);\n", tolower(topic), tolower(subtopic), $0}}'
-		} >&${db[1]}
-		
-		# Information
-		echo 'done!'
-		
-	done
-	exec_sql 'COMMIT;'
-	
-	# Fills the "topics" and "suptopics" tables
-	exec_sql 'INSERT INTO topics (name) SELECT DISTINCT d.topic FROM dmoz_tmp d LEFT JOIN topics t ON d.topic = t.name WHERE t.name IS NULL;'
-	exec_sql 'INSERT INTO subtopics (name) SELECT DISTINCT d.subtopic FROM dmoz_tmp d LEFT JOIN subtopics s ON d.subtopic = s.name WHERE s.name IS NULL;'
-	
-	# Fills the "categories" table
-	exec_sql <<- 'SQL'
-	INSERT INTO categories (topic, subtopic)
-	SELECT q.topic, q.subtopic
-	FROM (
-		SELECT DISTINCT t.id AS topic, s.id AS subtopic
-		FROM dmoz_tmp d
-		JOIN topics t ON d.topic = t.name
-		JOIN subtopics s ON d.subtopic = s.name
-	) q
-	LEFT JOIN categories c ON q.topic = c.topic
-		AND q.subtopic = c.subtopic
-	WHERE c.id IS NULL;
-	SQL
-	
-	# Fills the "urls" table
-	exec_sql 'INSERT INTO urls (value) SELECT DISTINCT d.url FROM dmoz_tmp d LEFT JOIN urls u ON d.url = u.value WHERE u.value IS NULL;'
-	
-	# Fills the "dmoz" table
-	exec_sql <<- 'SQL'
-	INSERT INTO dmoz (url, category)
-	SELECT u.id, q.category_id
-	FROM dmoz_tmp t
-	JOIN urls u ON t.url = u.value
-	JOIN (
-		SELECT c.id as category_id, t.id AS topic_id, t.name AS topic_name, s.id AS subtopic_id, s.name AS subtopic_name
-		FROM categories c
-		JOIN topics t ON c.topic = t.id
-		JOIN subtopics s ON c.subtopic = s.id
-		) q
-	ON t.topic = q.topic_name
-		AND t.subtopic = q.subtopic_name
-	LEFT JOIN dmoz d ON d.url = u.id
-		AND d.category = q.category_id
-	WHERE d.id IS NULL;
-	SQL
-	
-	# Removes all the downloaded RDFs
-	for rdf in ${DMOZ_RDF[@]}
-	do
-		[[ -e "/tmp/${rdf}.rdf.u8.gz" ]] && rm /tmp/${rdf}.rdf.u8.gz
-		[[ -e "/tmp/${rdf}.rdf.u8" ]] && rm /tmp/${rdf}.rdf.u8
-	done
+	echo 'done!'
 	
 	return 0
 }
 
-# Updates the ads database
-update_ads() {
+# Classifies the [new] websites (note that the order is important)
+classify_websites() {
+
+	classify_dmoz || return $?
+	classify_ads || return $?
+	classify_cdns || return $?
 	
-	# Removes previous download if there is any
-	[[ -e "/tmp/ad_servers.txt" ]] && rm /tmp/ad_servers.txt
+	return 0
+}
+
+# Classifies the website using the DMOZ categories
+classify_dmoz() {
+
+	# Local variables
+	local filters extra_filter
+	local db_entries
 	
-	# Creates the temporary tables for the update
+	# Check if the table exists and there are entries in it
+	db_entries=$(exec_sql 'SELECT count(*) FROM dmoz;')
+	[[ $db_entries -gt 0 ]] \
+		|| { error 'no_entry' 'DMOZ' ; return $? ; }
+	
+	# Information
+	echo -n 'Classification of the websites using the DMOZ table... '
+	
+	# Automatically try to set a category to the new websites using DMOZ
+	filters+=("AND c.topic NOT IN (SELECT id FROM topics WHERE name = 'world' OR name = 'regional')")
+	filters+=("AND c.topic != (SELECT id FROM topics WHERE name = 'world')")
+	filters+=(" ")
+	
+	for extra_filter in "${filters[@]}"
+	do
+		exec_sql <<- SQL
+		UPDATE websites w
+		SET category = s.category, hand_classified = FALSE
+		FROM (
+			SELECT DISTINCT ON (w.id) w.id, d.category
+			FROM websites w JOIN dmoz d ON w.url = d.url
+			JOIN categories c ON d.category = c.id
+			WHERE w.hand_classified IS NULL
+				OR w.category IS NULL
+			${extra_filter}
+		) s
+		WHERE s.id = w.id;
+		SQL
+	done
+	
+	# Information
+	echo 'done!'
+	
+	return 0
+}
+
+# Classifies the ads
+classify_ads() {
+	
+	# Local variables
+	local db_entries
+	local ads_regexp='(%[-_.])?ad(s|vertising|server|content)?[0-9]*([-_.]%)?'
+	
+	# Check if the table exists and there are entries in it
+	db_entries=$(exec_sql 'SELECT count(*) FROM ads;')
+	[[ $db_entries -gt 0 ]] \
+		|| { error 'no_entry' 'ads' ; return $? ; }
+	
+	# Information
+	echo -n 'Classification of the websites using the ads table... '
+	
+	# Use the ads table to classify the websites
 	exec_sql <<- 'SQL'
-	CREATE TEMPORARY TABLE ads_tmp (
-		id			SERIAL			PRIMARY KEY,
-		url			VARCHAR(255)	NOT NULL
+	UPDATE websites w
+	SET category = s.category, hand_classified = FALSE
+	FROM (
+		SELECT w.id, a.category
+		FROM websites w
+		JOIN ads a ON w.url = a.url
+		JOIN categories c ON a.category = c.id
+		WHERE w.hand_classified IS NULL
+			OR w.category IS NULL
+	) s
+	WHERE s.id = w.id;
+	SQL
+	
+	# Use the URL, with the regexp
+	exec_sql <<- SQL
+	UPDATE websites
+	SET category = (
+		SELECT id FROM categories
+		WHERE topic = (
+			SELECT id FROM topics
+			WHERE name = 'ads')),
+		hand_classified = FALSE
+	WHERE id IN (
+		SELECT w.id
+		FROM websites w
+		JOIN urls u ON w.url = u.id
+		WHERE u.value SIMILAR TO '${ads_regexp}'
+			AND (w.hand_classified IS NULL
+				OR w.category IS NULL)
 	);
 	SQL
 	
 	# Information
-	echo -n "Now downloading the dataset ${rdf}.rdf.u8.gz... "	
+	echo 'done!'
 	
-	# Downloads the ads file provided by http://hosts-file.net
-	wget -qO /tmp/ad_servers.txt http://hosts-file.net/ad_servers.txt \
-		|| { error 'ads_download' "http://hosts-file.net/ad_servers.txt" ; return $? ; }
-		
+	return 0
+}
+
+# Classifies the CDNs
+classify_cdns() {
+
+	# Local variables
+	local db_entries
+	local cdn_regexp='(%[-_.])?cdns?[0-9]*([-_.]%)?'
+	
+	# Check if the table exists and there are entries in it
+	db_entries=$(exec_sql 'SELECT count(*) FROM cdns;')
+	[[ $db_entries -gt 0 ]] \
+		|| { error 'no_entry' 'cdns' ; return $? ; }
+	
 	# Information
-	echo -ne 'done!\nInsertion of the ad urls in the database... '
+	echo -n 'Classification of the websites using the cdns table... '
 	
-	# Inserts the ads data in the database
+	# Use the cdns table to classify the websites
 	exec_sql <<- 'SQL'
-	PREPARE ads_plan (VARCHAR(255)) AS
-	INSERT INTO ads_tmp (url)
-	VALUES ($1);
+	UPDATE websites
+	SET category = (
+		SELECT id FROM categories
+		WHERE topic = (
+			SELECT id FROM topics
+			WHERE name = 'cdn')),
+		hand_classified = FALSE
+	WHERE id IN (
+		SELECT w.id
+		FROM websites w
+		JOIN urls u ON w.url = u.id
+		INNER JOIN (SELECT domain FROM cdns) c
+			ON u.value LIKE '%' || c.domain || '%'
+		WHERE w.hand_classified IS NULL
+			OR w.category IS NULL
+	);
 	SQL
-	exec_sql 'BEGIN;'
-	awk '{if(NF == 2 && $1 == "127.0.0.1"){sub(/\015/,"") ; printf "EXECUTE ads_plan (\47%s\47);\n", $2}}' /tmp/ad_servers.txt >&${db[1]}
-	exec_sql 'COMMIT;'
-	
-	# Fills the "urls" table
-	exec_sql 'INSERT INTO urls (value) SELECT DISTINCT a.url FROM ads_tmp a LEFT JOIN urls u ON a.url = u.value WHERE u.value IS NULL;'
-	
-	# Fills the "ads" table
-	exec_sql <<- 'SQL'
-	INSERT INTO ads (url, category)
-	SELECT q.url, q.category FROM (
-		SELECT * FROM (
-			SELECT u.id as url
-			FROM ads_tmp t
-			JOIN urls u ON u.value = t.url
-		) a
-		CROSS JOIN (
-			SELECT id as category
-			FROM categories
-			WHERE topic = (SELECT id FROM topics WHERE name = 'ads')
-			AND subtopic IS NULL
-		) b
-	) q
-	LEFT JOIN ads a
-	ON a.url = q.url
-	WHERE a.url IS NULL;
+
+	# Use the URL, with the regexp
+	exec_sql <<- SQL
+	UPDATE websites
+	SET category = (
+		SELECT id FROM categories
+		WHERE topic = (
+			SELECT id FROM topics
+			WHERE name = 'cdn')),
+		hand_classified = FALSE
+	WHERE id IN (
+		SELECT w.id
+		FROM websites w
+		JOIN urls u ON w.url = u.id
+		WHERE u.value SIMILAR TO '${cdn_regexp}'
+			AND (w.hand_classified IS NULL
+				OR w.category IS NULL)
+	);
 	SQL
 	
-	# Removes all the downloaded ads file
-	rm /tmp/ad_servers.txt
+	# Information
+	echo 'done!'
 	
 	return 0
 }

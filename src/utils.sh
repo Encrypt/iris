@@ -28,15 +28,21 @@ exec_sql() {
 	while read line
 	do
 		case $line in
+		
+			# If we read "EOF", then that is the end of the results
 			EOF)
 				break
 				;;
+			
+			# If it is an error, displays the error
 			ERROR:*|DETAIL:*)
 				error 'database_error' "$line"
 				return $?
 				;;
+			
+			# If it is something else, echoes the result
 			*)
-				echo "INFO: Unexpected database output: $line"
+				echo "$line"
 				;;
 		esac
 	done <&${db[0]}
@@ -59,23 +65,24 @@ error() {
 		unknown_argument)
 			echo "Unknown argument $2. Run \"${PROGNAME} help\" for further help." >&2
 			;;
-		dmoz_option)
-			echo "Unexpected DMOZ option: $2."
-			;;
 		already_processed)
-			echo "The dataset $2 has already been processed. Exiting..." >&2
+			echo "The dataset $2 has already been processed." >&2
 			;;
 		database_error)
 			echo "The database returned the following error during a statement execution: \"$2\"" >&2
 			;;
 		file_doesnt_exist)
-			echo "The file $2 doesn't not exist on the disk. Exiting..." >&2
+			echo "The file $2 doesn't not exist on the disk." >&2
 			;;
 		rdf_download)
 			echo "Could not download the RDF: $2." >&2
 			;;
 		ads_download)
 			echo "Could not download the ads dataset at address $2." >&2
+			;;
+		no_entry)
+			echo -n "The table \"$2\" doesn't contain any entry. " >&2
+			echo 'Please update that table before running the classification again.' >&2
 			;;
 		*)
 			echo "Unrecognized error: $err" >&2

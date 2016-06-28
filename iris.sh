@@ -31,8 +31,7 @@ readonly DMOZ_RDF=(ad-content kt-content content)
 main() {
 	
 	# Local variables
-	local pcap_path
-	local proj_file tmpfile
+	local pcap_path proj_file
 	
 	# Sources the files of the project
 	for proj_file in $(find ./src/ -name "*.sh")
@@ -47,7 +46,7 @@ main() {
 	case ${ARGS[0]} in
 		
 		# If the command implies the database...
-		analyse|dmoz|ads)
+		analyse|update|classify|reclassify)
 		
 			# ... open a connection
 			coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
@@ -56,39 +55,66 @@ main() {
 		# Analyses a dataset
 		analyse)
 			
-			# Gets the PCAP path
-			pcap_path=${ARGS[1]}
-			
 			# Tests if the file exists on the disk
-			[[ -e "${pcap_path}" ]] || { error 'file_doesnt_exist' "${pcap_path}" ; return $? ; }
+			[[ -e "${ARGS[1]}" ]] || { error 'file_doesnt_exist' "${ARGS[1]}" ; return $? ; }
 			
 			# Processes the dataset
-			fill_dataset "$pcap_path" || return $?
+			fill_dataset "${ARGS[1]}" || return $?
 			
 			# Fills the flows table
-			fill_flows "$pcap_path" || return $?
+			fill_flows "${ARGS[1]}" || return $?
 			
-			# And finally the websites
-			fill_websites "$pcap_path" || return $?
+			# Fills the websites
+			fill_websites "${ARGS[1]}" || return $?
+			
+			# Tries to classify the new websites
+			classify_websites || return $?
 			;;&
 		
-		# Updates the DMOZ database
-		dmoz)
+		# Updates the classifier given as argument
+		update)
+		
+			case ${ARGS[1]} in
 			
-			[[ "${ARGS[1]}" == 'update' ]] \
-				&& update_dmoz \
-				|| { error 'dmoz_option' "${ARGS[1]}" ; return $? ; }
+				# Updates the DMOZ table
+				dmoz)
+					update_dmoz || return $?
+					;;
+				
+				# Updates the ads table
+				ads)
+					update_ads || return $?
+					;;
+				
+				# Updates the cdns table with the file given as argument
+				cdns)
+					update_cdns "${ARGS[2]}" || return $?
+					;;
+			
+				# Unknown option
+				*)
+					error 'unknown_argument' "${ARGS[1]}"
+					return $?
+					;;
+			
+			esac
+			;;&		
+			
+		# Classifies the websites
+		classify)
+			
+			classify_websites || return $?
 			;;&
 		
-		# Updates the ads database
-		ads)
+		# Reclassifies the websites
+		reclassify)
 		
-			[[ "${ARGS[1]}" == 'update' ]] \
-				&& update_ads
+			reset_classification || return $?
+			classify_websites || return $?				
 			;;&
 		
 		# Closes the database connection
-		analyse|dmoz|ads)
+		analyse|update|classify|reclassify)
 			
 			echo '\q' >&${db[1]}
 			;;

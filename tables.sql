@@ -28,7 +28,7 @@ CREATE TABLE subtopics (
 CREATE TABLE categories (
 	id			SERIAL	PRIMARY KEY,
 	topic		INT		NOT NULL REFERENCES topics(id),
-	subtopic	INT		NOT NULL REFERENCES subtopics(id)
+	subtopic	INT		REFERENCES subtopics(id)
 );
 
 -- URLs of the websites
@@ -49,6 +49,12 @@ CREATE TABLE ads (
 	id			SERIAL	PRIMARY KEY,
 	url			INT		NOT NULL REFERENCES urls(id),
 	category	INT		NOT NULL REFERENCES categories(id)
+);
+
+-- CDNs database
+CREATE TABLE cdns (
+	id		SERIAL		PRIMARY KEY,
+	domain	VARCHAR(50)	NOT NULL UNIQUE
 );
 
 -- Websites visited by the users

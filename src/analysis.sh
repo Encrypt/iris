@@ -43,11 +43,7 @@ fill_flows() {
 	echo -n 'Retrieving the dataset ID from the database... '
 	
 	# Gets the ID corresponding to the previous insert statement
-	echo 'SELECT id FROM datasets ORDER BY added DESC LIMIT 1; \echo EOF' >&${db[1]}
-	while read line
-	do
-		[[ "$line" != 'EOF' ]] && dataset_id="$line" || break
-	done <&${db[0]}
+	dataset_id=$(exec_sql 'SELECT id FROM datasets ORDER BY added DESC LIMIT 1')
 	
 	# Information
 	echo -ne 'done!\nAnalysis of the flows of the PCAP in progress... '
@@ -115,7 +111,6 @@ fill_websites() {
 	# Local variables
 	local pcap_path=$1
 	local pcap_name tmpfile
-	local filters extra_filter
 	
 	# Creates a temporary file
 	tmpfile=$(mktemp)
@@ -172,39 +167,6 @@ fill_websites() {
 	
 	# Update the flows with the websites added
 	exec_sql 'UPDATE flows f SET website = w.id FROM websites_view v JOIN websites w ON w.url = v.url_id WHERE f.id = v.flow_id;'
-	
-	# Automatically detect advertisement websites
-	exec_sql <<- SQL
-	UPDATE websites w
-	SET category = s.category, hand_classified = FALSE
-	FROM (
-		SELECT w.id, a.category
-		FROM websites w JOIN ads a ON w.url = a.url
-		JOIN categories c ON a.category = c.id
-		WHERE hand_classified IS NULL
-	) s
-	WHERE s.id = w.id;
-	SQL
-	
-	# Automatically try to set a category to the new websites using DMOZ
-	filters+=("AND c.topic NOT IN (SELECT id FROM topics WHERE name = 'world' OR name = 'regional')")
-	filters+=("AND c.topic != (SELECT id FROM topics WHERE name = 'world')")
-	filters+=(" ")
-	
-	for extra_filter in "${filters[@]}"
-	do
-		exec_sql <<- SQL
-		UPDATE websites w
-		SET category = s.category, hand_classified = FALSE
-		FROM (
-			SELECT DISTINCT ON (w.id) w.id, d.category
-			FROM websites w JOIN dmoz d ON w.url = d.url
-			JOIN categories c ON d.category = c.id
-			WHERE hand_classified IS NULL ${extra_filter}
-		) s
-		WHERE s.id = w.id;
-		SQL
-	done
 	
 	# Information
 	echo 'done!'
