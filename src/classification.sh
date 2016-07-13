@@ -4,7 +4,7 @@
 # Resets the classification
 reset_classification() {
 
-	echo -n 'Resetting of the websites classification... '
+	info 'Resetting of the websites classification...' '0'
 
 	exec_sql <<- 'SQL'
 	UPDATE websites
@@ -13,14 +13,14 @@ reset_classification() {
 		OR category IS NOT NULL;
 	SQL
 	
-	echo 'done!'
+	info ' └─ Successfully reset the website categories!' '100'
 	
 	return 0
 }
 
 # Classifies the [new] websites (note that the order is important)
 classify_websites() {
-
+	
 	classify_dmoz || return $?
 	classify_ads || return $?
 	classify_cdns || return $?
@@ -34,14 +34,16 @@ classify_dmoz() {
 	# Local variables
 	local filters extra_filter
 	local db_entries
+
+	info 'Classification of the websites using the DMOZ table...' '0'
+	info ' ├─ Checking if the table exists and is not empty...' '0'
 	
 	# Check if the table exists and there are entries in it
 	db_entries=$(exec_sql 'SELECT count(*) FROM dmoz;')
 	[[ $db_entries -gt 0 ]] \
 		|| { error 'no_entry' 'DMOZ' ; return $? ; }
 	
-	# Information
-	echo -n 'Classification of the websites using the DMOZ table... '
+	info ' ├─ Classification in progress...' '20'
 	
 	# Automatically try to set a category to the new websites using DMOZ
 	filters+=("AND c.topic NOT IN (SELECT id FROM topics WHERE name = 'world' OR name = 'regional')")
@@ -65,8 +67,7 @@ classify_dmoz() {
 		SQL
 	done
 	
-	# Information
-	echo 'done!'
+	info ' └─ Classification successful!' '100'
 	
 	return 0
 }
@@ -78,13 +79,15 @@ classify_ads() {
 	local db_entries
 	local ads_regexp='(%[-_.])?ad(s|vertising|server|content)?[0-9]*([-_.]%)?'
 	
+	info 'Classification of the websites using the ads table...' '0'
+	info ' ├─ Checking if the table exists and is not empty...' '0'
+	
 	# Check if the table exists and there are entries in it
 	db_entries=$(exec_sql 'SELECT count(*) FROM ads;')
 	[[ $db_entries -gt 0 ]] \
 		|| { error 'no_entry' 'ads' ; return $? ; }
 	
-	# Information
-	echo -n 'Classification of the websites using the ads table... '
+	info ' ├─ Classification in progress...' '20'
 	
 	# Use the ads table to classify the websites
 	exec_sql <<- 'SQL'
@@ -100,6 +103,8 @@ classify_ads() {
 	) s
 	WHERE s.id = w.id;
 	SQL
+	
+	info '' '60'
 	
 	# Use the URL, with the regexp
 	exec_sql <<- SQL
@@ -120,8 +125,7 @@ classify_ads() {
 	);
 	SQL
 	
-	# Information
-	echo 'done!'
+	info ' └─ Classification successful!' '100'
 	
 	return 0
 }
@@ -132,14 +136,16 @@ classify_cdns() {
 	# Local variables
 	local db_entries
 	local cdn_regexp='(%[-_.])?cdns?[0-9]*([-_.]%)?'
+
+	info 'Classification of the websites using the cdns table...' '0'
+	info ' ├─ Checking if the table exists and is not empty...' '0'
 	
 	# Check if the table exists and there are entries in it
 	db_entries=$(exec_sql 'SELECT count(*) FROM cdns;')
 	[[ $db_entries -gt 0 ]] \
 		|| { error 'no_entry' 'cdns' ; return $? ; }
 	
-	# Information
-	echo -n 'Classification of the websites using the cdns table... '
+	info ' ├─ Classification in progress...' '20'
 	
 	# Use the cdns table to classify the websites
 	exec_sql <<- 'SQL'
@@ -160,7 +166,9 @@ classify_cdns() {
 			OR w.category IS NULL
 	);
 	SQL
-
+	
+	info '' '60'
+	
 	# Use the URL, with the regexp
 	exec_sql <<- SQL
 	UPDATE websites
@@ -180,8 +188,7 @@ classify_cdns() {
 	);
 	SQL
 	
-	# Information
-	echo 'done!'
+	info ' └─ Classification successful!' '100'
 	
 	return 0
 }

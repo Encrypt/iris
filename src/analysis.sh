@@ -8,10 +8,15 @@ fill_dataset() {
 	local pcap_path=$1
 	local pcap_md5 pcap_name timestamp
 	
+	info 'Filling of the dataset table in the database...' '0'
+	info ' ├─ Extracting the dataset information...' '0'
+	
 	# Gets information about the dataset
 	pcap_md5=$(head -c 100M ${pcap_path} | md5sum | cut -c1-32)
 	pcap_name=$(basename ${pcap_path})
 	timestamp=$(date '+%F %T')
+	
+	info ' ├─ Trying to insert the new dataset in the database...' '25'
 	
 	# Inserts the new dataset in the database if has not already been added
 	echo "INSERT INTO datasets VALUES (DEFAULT, '${pcap_name}', '${pcap_md5}', '${timestamp}'); \echo EOF" >&${db[1]}
@@ -20,6 +25,8 @@ fill_dataset() {
 		[[ "$line" == 'ERROR'* ]] && { echo '\q' >&${db[1]} ; error 'already_processed' "${pcap_name}" ; return $? ; }
 		[[ "$line" == 'EOF' ]] && break
 	done <&${db[0]}
+	
+	info ' └─ Insertion successful!' '100'
 	
 	return 0
 }
@@ -33,20 +40,20 @@ fill_flows() {
 	local protocols protocol ids
 	local lpi_pids
 	
+	info 'Filling of the flows table in the database...' '0'
+	
 	# Creates 3 temporary files for lpi_arff and lpi_protoident and both merged
 	for i in {0..2}
 	do
 		tmpfiles+=($(mktemp))
 	done
 	
-	# Information
-	echo -n 'Retrieving the dataset ID from the database... '
+	info ' ├─ Retrieving the dataset ID from the database...' '5'
 	
 	# Gets the ID corresponding to the previous insert statement
-	dataset_id=$(exec_sql 'SELECT id FROM datasets ORDER BY added DESC LIMIT 1')
+	dataset_id=$(exec_sql 'SELECT id FROM datasets ORDER BY added DESC LIMIT 1;')
 	
-	# Information
-	echo -ne 'done!\nAnalysis of the flows of the PCAP in progress... '
+	info ' ├─ Analysis of the flows of the PCAP in progress...' '10'
 	
 	# Processes the PCAP file with lpi_protoident
 	# Extracts: protocol, endpoint_a, endpoint_b, port_a, port_b, transport
@@ -71,9 +78,8 @@ fill_flows() {
 	
 	# Merge both analyses
 	paste -d ' ' "${tmpfiles[0]}" "${tmpfiles[1]}" > ${tmpfiles[2]}
-		
-	# Information
-	echo -ne 'done!\nInsertion of the new protocols in the database... '
+	
+	info ' ├─ Insertion of the new protocols in the database...' '60'
 	
 	# Adds the protocols not already existing in the database
 	exec_sql 'CREATE TEMPORARY TABLE protocols_tmp (name VARCHAR(50) PRIMARY KEY);'
@@ -83,8 +89,7 @@ fill_flows() {
 	exec_sql 'COMMIT;'
 	exec_sql 'INSERT INTO protocols (name) SELECT t.name FROM protocols_tmp t LEFT JOIN protocols p ON t.name = p.name WHERE p.name IS NULL;'
 	
-	# Information
-	echo -ne 'done!\nInsertion of the flows in the database (this may take some time)... '
+	info ' ├─ Insertion of the flows in the database...' '70'
 	
 	# Insert in the database
 	exec_sql <<- 'SQL'
@@ -96,8 +101,7 @@ fill_flows() {
 	awk -v dataset_id=${dataset_id} '{printf "EXECUTE flows_plan (%s, \47%s\47, %s, %s, %s, \47%s\47, \47%s\47, %s, %s, %s, %s, %s, %s);\n", dataset_id, tolower($1), $6, $7, $8, $2, $3, $4, $5, $9, $10, $11, $12}' ${tmpfiles[2]} >&${db[1]}
 	exec_sql 'COMMIT;'
 	
-	# Information
-	echo 'done!'
+	info ' └─ Insertion successful!' '100'
 	
 	# Deletes the temporary files
 	rm ${tmpfiles[@]}
@@ -111,6 +115,8 @@ fill_websites() {
 	# Local variables
 	local pcap_path=$1
 	local pcap_name tmpfile
+	
+	info 'Filling of the websites table in the database...' '0'
 	
 	# Creates a temporary file
 	tmpfile=$(mktemp)
@@ -129,8 +135,7 @@ fill_websites() {
 	);
 	SQL
 	
-	# Information
-	echo -n 'Analysis of the websites visited... '
+	info ' ├─ Analysis of the websites visited...' '10'
 	
 	# Inserts in the websites in the temporary database
 	exec_sql <<- 'SQL'
@@ -155,21 +160,26 @@ fill_websites() {
 	LEFT JOIN urls u ON a.url = u.value
 	WHERE f.dataset = (SELECT id FROM datasets WHERE name = '${pcap_name}' ORDER BY added DESC LIMIT 1)
 		AND f.protocol IN (SELECT id FROM protocols WHERE name = 'http' OR name = 'https')
-		AND f.timestamp BETWEEN a.timestamp AND a.timestamp + interval '15 minutes'
+		AND f.timestamp BETWEEN a.timestamp AND a.timestamp + INTERVAL '15 minutes'
 	ORDER BY f.id, tstamp_diff ASC;
 	SQL
+	
+	info ' ├─ Insertion of the URLs in the database...' '70'
 	
 	# Inserts the URLs of the websites which do not yet exist in "websites"
 	exec_sql 'INSERT INTO urls (value) SELECT DISTINCT url_value FROM websites_view WHERE url_id IS NULL;'
 	
+	info ' ├─ Insertion of the websites in the database...' '80'
+	
 	# Inserts the identified websites in the database
 	exec_sql 'INSERT INTO websites (url) SELECT DISTINCT v.url_id FROM websites_view v LEFT JOIN websites w ON v.url_id = w.url WHERE w.url IS NULL AND v.url_id IS NOT NULL;'
+	
+	info ' ├─ Updating the flows with these new websites...' '90'
 	
 	# Update the flows with the websites added
 	exec_sql 'UPDATE flows f SET website = w.id FROM websites_view v JOIN websites w ON w.url = v.url_id WHERE f.id = v.flow_id;'
 	
-	# Information
-	echo 'done!'
+	info ' └─ Websites analysis successful!' '100'
 	
 	# Deletes the temporary file
 	rm $tmpfile

@@ -50,6 +50,37 @@ exec_sql() {
 	return 0
 }
 
+# Information formating
+info() {
+	
+	# Local variables
+	local message=$1
+	local progress=$2
+	local line
+	
+	# If at least one argument is given, process it
+	if [[ $# -gt 0 ]]
+	then
+	
+		# The message exists and UI is not used, echoes it
+		[[ -n "$message" && ${ARGS_NB} -gt 0 ]] \
+			&& echo "INFO: ${message}"
+	
+		# If the progress exists and the UI is used, echoes it
+		[[ -n "$progress" && ${ARGS_NB} -eq 0 ]] \
+			&& echo "$progress"
+	
+	# Else if the UI is unused and there is no argument, read the here-document
+	elif [[ $# -eq 0 && ${ARGS_NB} -gt 0 ]]
+	then
+		while read line
+		do
+			echo "$line"
+		done
+	fi
+	
+	return 1
+}
 
 # Error handling
 error() {
@@ -59,9 +90,6 @@ error() {
 	# Displays the error
 	echo -n 'ERROR: ' >&2
 	case $err in
-		argument_missing)
-			echo "${PROGNAME} expects at least one argument. Run \"${PROGNAME} help\" for further help." >&2
-			;;
 		unknown_argument)
 			echo "Unknown argument $2. Run \"${PROGNAME} help\" for further help." >&2
 			;;

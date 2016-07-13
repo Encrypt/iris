@@ -39,98 +39,102 @@ main() {
 		source "$proj_file"
 	done
 	
-	# Checks that there are at least 1 argument
-	[[ ${ARGS_NB} -lt 1 ]] && { error 'argument_missing' ; return $? ; }
+	# If there is no argument, use the UI
+	if [[ ${ARGS_NB} -eq 0 ]]
+	then
+		menu_main \
+			&& return 0 \
+			|| return $?
 	
-	# Gets the command given
-	case ${ARGS[0]} in
+	# Else, gets the command given
+	else
+	
+		case ${ARGS[0]} in
 		
-		# If the command implies the database...
-		analyse|update|classify|reclassify)
+			# If the command implies the database...
+			analyse|update|classify|reclassify)
 		
-			# ... open a connection
-			coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
-			;;&
+				# ... open a connection
+				coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
+				;;&
 		
-		# Analyses a dataset
-		analyse)
+			# Analyses a dataset
+			analyse)
 			
-			# Tests if the file exists on the disk
-			[[ -e "${ARGS[1]}" ]] || { error 'file_doesnt_exist' "${ARGS[1]}" ; return $? ; }
+				# Tests if the file exists on the disk
+				[[ -f "${ARGS[1]}" ]] || { error 'file_doesnt_exist' "${ARGS[1]}" ; return $? ; }
 			
-			# Processes the dataset
-			fill_dataset "${ARGS[1]}" || return $?
+				# Processes the dataset
+				fill_dataset "${ARGS[1]}" || return $?
 			
-			# Fills the flows table
-			fill_flows "${ARGS[1]}" || return $?
+				# Fills the flows table
+				fill_flows "${ARGS[1]}" || return $?
 			
-			# Fills the websites
-			fill_websites "${ARGS[1]}" || return $?
+				# Fills the websites
+				fill_websites "${ARGS[1]}" || return $?
 			
-			# Tries to classify the new websites
-			classify_websites || return $?
-			;;&
+				# Tries to classify the new websites
+				classify_websites || return $?
+				;;&
 		
-		# Updates the classifier given as argument
-		update)
+			# Updates the classifier given as argument
+			update)
 		
-			case ${ARGS[1]} in
+				case ${ARGS[1]} in
 			
-				# Updates the DMOZ table
-				dmoz)
-					update_dmoz || return $?
-					;;
+					# Updates the DMOZ table
+					dmoz)
+						update_dmoz || return $?
+						;;
 				
-				# Updates the ads table
-				ads)
-					update_ads || return $?
-					;;
+					# Updates the ads table
+					ads)
+						update_ads || return $?
+						;;
 				
-				# Updates the cdns table with the file given as argument
-				cdns)
-					update_cdns "${ARGS[2]}" || return $?
-					;;
+					# Updates the cdns table with the file given as argument
+					cdns)
+						update_cdns "${ARGS[2]}" || return $?
+						;;
 			
-				# Unknown option
-				*)
-					error 'unknown_argument' "${ARGS[1]}"
-					return $?
-					;;
+					# Unknown option
+					*)
+						error 'unknown_argument' "${ARGS[1]}"
+						return $?
+						;;
 			
-			esac
-			;;&		
+				esac
+				;;&		
 			
-		# Classifies the websites
-		classify)
-			
-			classify_websites || return $?
-			;;&
+			# Classifies the websites
+			classify)
+				classify_websites || return $?
+				;;&
 		
-		# Reclassifies the websites
-		reclassify)
+			# Reclassifies the websites
+			reclassify)
+				reset_classification || return $?
+				classify_websites || return $?
+				;;&
 		
-			reset_classification || return $?
-			classify_websites || return $?				
-			;;&
+			# Closes the database connection
+			analyse|update|classify|reclassify)
+				echo '\q' >&${db[1]}
+				;;
 		
-		# Closes the database connection
-		analyse|update|classify|reclassify)
-			
-			echo '\q' >&${db[1]}
-			;;
+			# Displays the help
+			help)
+				help
+				;;
 		
-		# Displays the help
-		help)
-			help
-			;;
+			# Unknown argument
+			*)
+				error 'unknown_argument' "${ARGS[0]}"
+				return $?
+				;;
 		
-		# Unknown argument
-		*)
-			error 'unknown_argument' "${ARGS[0]}"
-			return $?
-			;;
-		
-	esac
+		esac
+	fi
 	
 	return 0
 }
