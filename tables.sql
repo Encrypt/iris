@@ -84,6 +84,27 @@ CREATE TABLE flows (
 	packets_nb_ba	BIGINT		NOT NULL
 );
 
+-- Statistics
+CREATE TABLE stats (
+	id					SERIAL	PRIMARY KEY,
+	ip					INET	NOT NULL,
+	day					DATE	NOT NULL,
+	activity_time		INTERVAL,
+	inactivity_time		INTERVAL,
+	flows_in			INT,
+	flows_out			INT,
+	flows_thirty_mins	INT[48],
+	packets_in			BIGINT,
+	packets_out			BIGINT,
+	payload_size_in		BIGINT,
+	payload_size_out	BIGINT,
+	websites_visited	INT,
+	browsing_proba_bb	FLOAT,
+	browsing_proba_bi	FLOAT,
+	browsing_proba_ib	FLOAT,
+	browsing_proba_ii	FLOAT
+);
+
 -- Inserts the ads and cdn categories
 INSERT INTO topics (name) VALUES ('ads'), ('cdn');
 INSERT INTO categories (topic) SELECT id FROM topics WHERE name = 'ads' OR name = 'cdn';

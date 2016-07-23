@@ -99,6 +99,9 @@ error() {
 		database_error)
 			echo "The database returned the following error during a statement execution: \"$2\"" >&2
 			;;
+		ip_doesnt_exist)
+			echo "The IP $2 is either wrong or doesn't exist in the database." >&2
+			;;
 		file_doesnt_exist)
 			echo "The file $2 doesn't not exist on the disk." >&2
 			;;

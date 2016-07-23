@@ -52,7 +52,7 @@ main() {
 		case ${ARGS[0]} in
 		
 			# If the command implies the database...
-			analyse|update|classify|reclassify)
+			analyse|update|stats|classify|reclassify)
 		
 				# ... open a connection
 				coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
@@ -104,7 +104,18 @@ main() {
 						;;
 			
 				esac
-				;;&		
+				;;&
+			
+			# Stats on an IP address
+			stats)
+				
+				# Checks if the IP is a correct IPv4 one
+				[[ "${ARGS[1]}" =~ [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3} ]] \
+					|| { error 'ip_doesnt_exist' "${ARGS[1]}" ; return $? ; }
+				
+				# Processes the stats
+				process_stats "${ARGS[1]}" || return $?
+				;;&
 			
 			# Classifies the websites
 			classify)
@@ -118,7 +129,7 @@ main() {
 				;;&
 		
 			# Closes the database connection
-			analyse|update|classify|reclassify)
+			analyse|update|stats|classify|reclassify)
 				echo '\q' >&${db[1]}
 				;;
 		
