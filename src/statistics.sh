@@ -8,6 +8,8 @@ process_stats() {
 	local arg_ip=$1
 	local ip_exists
 	
+	info 'Checking if the IP given exists in the database...' '0'
+	
 	# Checks if there is at least a row with the given IP
 	ip_exists=$(exec_sql "SELECT exists(SELECT 1 FROM flows WHERE endpoint_a = '${arg_ip}' OR endpoint_b = '${arg_ip}');")
 	
@@ -18,8 +20,12 @@ process_stats() {
 		return $?
 	fi
 	
+	info ' ├─ Deleting the previous stats on this IP...' '10'
+	
 	# Deletes the previous stats (the database may have changed)
 	exec_sql "DELETE FROM stats WHERE ip='${arg_ip}';"
+	
+	info ' ├─ Getting the inactivity days...' '20'
 	
 	# Adds the days of activity
 	exec_sql <<- SQL
@@ -33,6 +39,8 @@ process_stats() {
 		WHERE (endpoint_b = '${arg_ip}' OR endpoint_a = '${arg_ip}')
 	) q;
 	SQL
+	
+	info ' ├─ Getting the number of incoming flows...' '30'
 	
 	# Number of flows in
 	exec_sql <<- SQL
@@ -49,6 +57,8 @@ process_stats() {
 		AND s.day = q.day;
 	SQL
 	
+	info ' ├─ Getting the number of outgoing flows...' '40'
+	
 	# Number of flows out
 	exec_sql <<- SQL
 	UPDATE stats s
@@ -63,6 +73,8 @@ process_stats() {
 	WHERE s.ip = '${arg_ip}'
 		AND s.day = q.day;
 	SQL
+	
+	info ' ├─ Getting the number of flows per 30 minutes...' '50'
 	
 	# Number of flows per 30 minutes (in and out)
 	exec_sql <<- SQL
@@ -100,6 +112,8 @@ process_stats() {
 		AND s.day = q.day;
 	SQL
 	
+	info ' ├─ Getting the number unique websites visited...' '60'
+	
 	# Number of unique websites visited (which are not CDNs or ads)
 	exec_sql <<- SQL
 	UPDATE stats s
@@ -126,7 +140,9 @@ process_stats() {
 	WHERE s.ip = '${arg_ip}'
 		AND s.day = q.day;
 	SQL
-
+	
+	info ' ├─ Getting the number of packets / payload size...' '70'
+	
 	# Number of packets / payload size
 	exec_sql <<- SQL
 	UPDATE stats s
@@ -161,7 +177,9 @@ process_stats() {
 	WHERE s.ip = '${arg_ip}'
 		AND s.day = q.day;
 	SQL
-
+	
+	info ' ├─ Getting the browsing probabilities...' '80'
+	
 	# Browsing probabilities
 	exec_sql <<- SQL
 	UPDATE stats s
@@ -240,6 +258,8 @@ process_stats() {
 		AND s.day = q.day;
 	SQL
 	
+	info ' ├─ Getting the activity and inactivity times...' '90'
+	
 	# Activity and inactivity time
 	exec_sql <<- SQL
 	UPDATE stats s
@@ -306,6 +326,8 @@ process_stats() {
 	WHERE s.ip = '${arg_ip}'
 		AND s.day = q.day;
 	SQL
-
+	
+	info ' └─ Stats successful!' '100'
+	
 	return 0
 }
