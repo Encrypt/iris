@@ -127,15 +127,21 @@ error() {
 help() {
 
 	cat <<- EOF
-	Usage: ${PROGNAME} [ analyse <pcap_path> | dmoz update ]
+	Usage: ${PROGNAME} <operation> <arguments>
 	
-	Operations:
+	Operations and arguments:
 	  analyse <pcap_path>: Analyses the PCAP given as argument.
-	  dmoz update: Updates the DMOZ database used for classification.
+	  update [ dmoz | ads | cnds <file> ]: Updates the database given as argument.
+	  stats <ip_address>: Processes the statistics of the IP given as argument.
+	  classify: Uses the classification databases to classify the unclassified websites.
+	  reclassify: Does the same as classify, but resets the classification first.
 	  help: Displays this help.
 	
-	To analyse a PCAP, you will probably run: ./${PROGNAME} /home/me/capture.pcap
-	Please make sure that the configuration (of the database) is correct before running ${PROGNAME}.
+	With no operation given, a whiptail UI will appear.
+	
+	Hints:
+	  To analyse a PCAP, you will probably run: ./${PROGNAME} analyse /home/me/capture.pcap
+	  Please make sure that the database configuration is correct before running ${PROGNAME}.
 	EOF
 	
 	return 0
