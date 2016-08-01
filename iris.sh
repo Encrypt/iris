@@ -34,7 +34,7 @@ main() {
 	local pcap_path proj_file
 	
 	# Sources the files of the project
-	for proj_file in $(find ./src/ -name "*.sh")
+	for proj_file in $(find "${BASH_SOURCE[0]%/*}/src/" -name "*.sh")
 	do
 		source "$proj_file"
 	done

@@ -13,14 +13,15 @@ menu_main() {
 	do
 	
 		# Displays the menu
-		option=$(whiptail --notags --nocancel --title 'IRIS -- Main Menu' --menu '\nSelect an option to go further.' 14 78 5 \
+		option=$(whiptail --notags --nocancel --title 'IRIS -- Main Menu' --menu '\nSelect an option to go further.' 15 78 6 \
 			'analyse' 'Analyse a new PCAP' \
 			'classify' 'Classify the website entries' \
+			'stats' 'Process stats' \
 			'update' 'Update a classifier' \
 			'help' 'Display the help' \
 			'exit' 'Exit IRIS' \
 		3>&1 1>&2 2>&3)
-	
+		
 		# Goes to the corresponding menu
 		case "$option" in
 			analyse)
@@ -29,11 +30,14 @@ menu_main() {
 			classify)
 				menu_classify || return $?
 				;;
-			help)
-				menu_help || return $?
-				;;			
+			stats)
+				menu_stats || return $?
+				;;
 			update)
 				menu_update || return $?
+				;;
+			help)
+				menu_help || return $?
 				;;
 		esac
 		
@@ -145,6 +149,45 @@ menu_classify() {
 	return 0
 }
 
+# Extracts stats from the database
+menu_stats() {
+
+	# Local variables
+	local coproc_pid
+	local ip ips choices
+	local option options
+	
+	# Opens the database
+	coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
+	
+	# Gets the potential IPs
+	ips=($(exec_sql "SELECT DISTINCT endpoint_b FROM flows WHERE protocol IN (SELECT id FROM protocols WHERE name IN ('http', 'https'));"))
+	echo '\q' >&${db[1]}
+	kill $db_PID
+	
+	# Set them as active in the whiptail menu
+	for ip in ${ips[@]}
+	do
+		choices+="$ip ON "
+	done
+	
+	# Menu to choose the IPs used in the stats
+	options=($(whiptail --noitem --separate-output --title 'IRIS -- Stats' --checklist '\nChoose the IPs that you wish to add in the stats.' 11 78 3 $choices 3>&1 1>&2 2>&3))
+	
+	# Process the stats
+	{
+		coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
+		for option in ${options[@]}
+		do
+			process_stats "$option"
+		done
+	} \
+		| awk -v gauge_max=$((${#options[@]} * 100)) '{if(lag < $0){sum = sum - lag + $0} ; lag = $0 ; print int(sum/gauge_max*100) ; fflush()}' \
+		| whiptail --gauge 'Statistics processing in progress...' 6 50 0
+	
+	return 0
+}
+
 # Updates a classifier
 menu_update() {
 
@@ -153,15 +196,15 @@ menu_update() {
 	local cdn_file
 	
 	# Displays the menu
-	options=$(whiptail --notags --separate-output --title 'IRIS -- Update' --checklist '\nChoose the classifier(s) that you wish to update.' 11 78 3 \
+	options=($(whiptail --notags --separate-output --title 'IRIS -- Update' --checklist '\nChoose the classifier(s) that you wish to update.' 11 78 3 \
 		'ads' 'ADs  -- Using the preconfigured lists' OFF \
 		'dmoz' 'DMOZ -- Using the official RDFs dumps' OFF \
 		'cdns' 'CDNs -- Using a domain list file' OFF \
-	3>&1 1>&2 2>&3)
+	3>&1 1>&2 2>&3))
 	
 	# Update the chosen datasets
 	step=1
-	for option in "${options[@]}"
+	for option in ${options[@]}
 	do
 	
 		# Updates the chosen table
