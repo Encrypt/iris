@@ -20,12 +20,12 @@ process_stats() {
 		return $?
 	fi
 	
-	info ' ├─ Deleting the previous stats on this IP...' '10'
+	info ' ├─ Deleting the previous stats on this IP...' '5'
 	
 	# Deletes the previous stats (the database may have changed)
 	exec_sql "DELETE FROM stats WHERE ip='${arg_ip}';"
 	
-	info ' ├─ Getting the inactivity days...' '20'
+	info ' ├─ Getting the days of activity...' '10'
 	
 	# Adds the days of activity
 	exec_sql <<- SQL
@@ -40,7 +40,7 @@ process_stats() {
 	) q;
 	SQL
 	
-	info ' ├─ Getting the number of incoming flows...' '30'
+	info ' ├─ Getting the number of incoming flows...' '20'
 	
 	# Number of flows in
 	exec_sql <<- SQL
@@ -57,7 +57,7 @@ process_stats() {
 		AND s.day = q.day;
 	SQL
 	
-	info ' ├─ Getting the number of outgoing flows...' '40'
+	info ' ├─ Getting the number of outgoing flows...' '30'
 	
 	# Number of flows out
 	exec_sql <<- SQL
@@ -74,7 +74,7 @@ process_stats() {
 		AND s.day = q.day;
 	SQL
 	
-	info ' ├─ Getting the number of flows per 30 minutes...' '50'
+	info ' ├─ Getting the number of flows per 30 minutes...' '40'
 	
 	# Number of flows per 30 minutes (in and out)
 	exec_sql <<- SQL
@@ -112,7 +112,7 @@ process_stats() {
 		AND s.day = q.day;
 	SQL
 	
-	info ' ├─ Getting the number unique websites visited...' '60'
+	info ' ├─ Getting the number unique websites visited...' '50'
 	
 	# Number of unique websites visited (which are not CDNs or ads)
 	exec_sql <<- SQL
@@ -141,7 +141,7 @@ process_stats() {
 		AND s.day = q.day;
 	SQL
 	
-	info ' ├─ Getting the number of packets / payload size...' '70'
+	info ' ├─ Getting the number of packets / payload size...' '60'
 	
 	# Number of packets / payload size
 	exec_sql <<- SQL
@@ -178,7 +178,7 @@ process_stats() {
 		AND s.day = q.day;
 	SQL
 	
-	info ' ├─ Getting the browsing probabilities...' '80'
+	info ' ├─ Getting the browsing probabilities...' '70'
 	
 	# Browsing probabilities
 	exec_sql <<- SQL
@@ -258,17 +258,86 @@ process_stats() {
 		AND s.day = q.day;
 	SQL
 	
-	info ' ├─ Getting the activity and inactivity times...' '90'
+	info ' ├─ Getting the number of sessions & session time...' '80'
 	
-	# Activity and inactivity time
+	# Browsing sessions & session time
 	exec_sql <<- SQL
 	UPDATE stats s
-	SET activity_time = q.activity_time,
-		inactivity_time = q.inactivity_time
+	SET browsing_sessions = q.browsing_sessions,
+		browsing_sess_time = q.browsing_sess_time
 	FROM (
 		SELECT q6.day,
-			sum(q6.duration) AS activity_time,
-			(INTERVAL '24 hours' - sum(q6.duration)) AS inactivity_time
+			count(*) AS browsing_sessions,
+			sum(q6.duration) AS browsing_sess_time
+		FROM (
+			SELECT s2.day, q5.timestamp_start, q5.timestamp_end, CASE
+				WHEN q5.day_start = q5.day_end
+					THEN q5.timestamp_end - q5.timestamp_start
+				ELSE CASE
+					WHEN q5.day_start = s2.day
+						THEN q5.day_start + INTERVAL '24 hours' - q5.timestamp_start
+					WHEN q5.day_end = s2.day
+						THEN q5.timestamp_end - s2.day
+					ELSE
+						INTERVAL '24 hours'
+					END
+				END AS duration
+			FROM (
+				SELECT generate_series(day_start, day_end, '1 day'::INTERVAL)::DATE AS day
+				FROM (
+					SELECT min(day) AS day_start, 
+						max(day) AS day_end
+					FROM stats
+					WHERE ip = '${arg_ip}'
+				) s1
+			) s2
+			LEFT JOIN (
+				SELECT min(q4.start_time) AS timestamp_start,
+					max(q4.end_time) + INTERVAL '5 minutes' AS timestamp_end,
+					min(q4.start_time)::DATE AS day_start,
+					(max(q4.end_time) + INTERVAL '5 minutes')::DATE AS day_end
+				FROM (
+					SELECT q3.start_time, q3.end_time, max(q3.new_start) OVER (ORDER BY q3.start_time, q3.end_time) AS left_edge
+					FROM (
+						SELECT q2.start_time, q2.end_time,
+							CASE WHEN q2.start_time <= max(q2.lag_end_time) OVER (ORDER BY q2.start_time, q2.end_time) + INTERVAL '5 minutes'
+							THEN NULL
+							ELSE q2.start_time
+							END AS new_start
+						FROM (
+							SELECT start_time, end_time, lag(end_time) OVER (ORDER BY start_time, end_time) AS lag_end_time
+							FROM (
+								SELECT timestamp AS start_time,
+									timestamp + (duration / 1000000.0) * INTERVAL '1 second' AS end_time
+								FROM flows
+								WHERE (endpoint_a = '${arg_ip}' OR endpoint_b = '${arg_ip}')
+									AND protocol IN (
+										SELECT id FROM protocols
+										WHERE name IN ('http', 'https')
+									)
+							) q1
+						) q2
+					) q3
+				) q4
+				GROUP BY left_edge
+			) q5
+			ON s2.day BETWEEN q5.day_start AND q5.day_end
+		) q6
+		GROUP BY q6.day
+	) q
+	WHERE s.ip = '${arg_ip}'
+		AND s.day = q.day;
+	SQL
+	
+	info ' ├─ Getting the network activity time...' '90'
+	
+	# Network activity time
+	exec_sql <<- SQL
+	UPDATE stats s
+	SET network_time = q.network_time
+	FROM (
+		SELECT q6.day,
+			sum(q6.duration) AS network_time
 		FROM (
 			SELECT s2.day, CASE
 				WHEN q5.day_start = q5.day_end
@@ -285,7 +354,7 @@ process_stats() {
 			FROM (
 				SELECT generate_series(day_start, day_end, '1 day'::INTERVAL)::DATE AS day
 				FROM (
-					SELECT min(day) AS day_start, 
+					SELECT min(day) AS day_start,
 						max(day) AS day_end
 					FROM stats
 					WHERE ip = '${arg_ip}'

@@ -164,6 +164,7 @@ menu_stats() {
 	ips=($(exec_sql "SELECT DISTINCT endpoint_b FROM flows WHERE protocol IN (SELECT id FROM protocols WHERE name IN ('http', 'https'));"))
 	echo '\q' >&${db[1]}
 	kill $db_PID
+	wait $db_PID 2>/dev/null
 	
 	# Set them as active in the whiptail menu
 	for ip in ${ips[@]}
