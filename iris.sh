@@ -31,7 +31,7 @@ readonly DMOZ_RDF=(ad-content kt-content content)
 main() {
 	
 	# Local variables
-	local pcap_path proj_file
+	local pcap_path proj_file arg
 	
 	# Sources the files of the project
 	for proj_file in $(find "${BASH_SOURCE[0]%/*}/src/" -name "*.sh")
@@ -109,12 +109,29 @@ main() {
 			# Stats on an IP address
 			stats)
 				
-				# Checks if the IP is a correct IPv4 one
-				[[ "${ARGS[1]}" =~ [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3} ]] \
-					|| { error 'ip_doesnt_exist' "${ARGS[1]}" ; return $? ; }
+				# Checks that the IPs given as argument are correct
+				for arg in ${ARGS[@]:1}
+				do
+					check_ip "$arg" || return $?
+				done
 				
-				# Processes the stats
-				process_stats "${ARGS[1]}" || return $?
+				# Cleans the stats table & folder
+				prepare_stats_clean
+				
+				# Processes the stats, using the database and the stats table
+				for arg in ${ARGS[@]:1}
+				do
+					fill_stats_table "$arg" || return $?
+				done
+				
+				# Process the stats for each user
+				for arg in ${ARGS[@]:1}
+				do
+					generate_user_report "$arg" || return $?
+				done
+				
+				# General stats
+				generate_global_report || return $?
 				;;&
 			
 			# Classifies the websites

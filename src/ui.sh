@@ -178,12 +178,27 @@ menu_stats() {
 	# Process the stats
 	{
 		coproc db { psql -Atnq -U ${PSQL_USER} -d ${PSQL_DATABASE} 2>&1 ; }
+		
+		# Cleans the stats table & folder
+		prepare_stats_clean
+		
+		# Processes the stats, using the database and the stats table
 		for option in ${options[@]}
 		do
-			process_stats "$option"
+			fill_stats_table "$option" || return $?
 		done
+		
+		# Process the stats for each user
+		for option in ${options[@]}
+		do
+			generate_user_report "$option" || return $?
+		done
+		
+		# General stats
+		generate_global_report || return $?
+		
 	} \
-		| awk -v gauge_max=$((${#options[@]} * 100)) '{if(lag < $0){sum = sum - lag + $0} ; lag = $0 ; print int(sum/gauge_max*100) ; fflush()}' \
+		| awk -v gauge_max=$(((${#options[@]} * 2 + 2) * 100)) '{if(lag < $0){sum = sum - lag + $0} ; lag = $0 ; print int(sum/gauge_max*100) ; fflush()}' \
 		| whiptail --gauge 'Statistics processing in progress...' 6 50 0
 	
 	return 0

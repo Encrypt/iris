@@ -1,14 +1,101 @@
 # File: statistics.sh
 # Content: Functions to do statistics on the data
 
+# Checks that the IP is correct
+check_ip() {
+
+	# Local variables
+	local ip=$1
+	local value
+	
+	info "Checking if the IP $ip is correct..." '0'
+	
+	# Checks against a regexp
+	[[ "$ip" =~ [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3} ]] \
+		|| { error 'ip_doesnt_exist' "$ip" ; return $? ; }
+	
+	# Checks the value between the dots (0 <= value <= 255)
+	for value in $(echo "$ip" | sed 's/\./\n/g')
+	do
+		[[ $value -ge 0 && $value -le 255 ]] \
+			|| { error 'ip_doesnt_exist' "$ip" ; return $? ; }
+	done
+	
+	info ' └─ IP correct!' '100'
+	
+	return 0
+}
+
+# Cleans the database "stats" table ans "stats" folder
+prepare_stats_clean() {
+	
+	# Local variables
+	local iris_folder="${BASH_SOURCE[0]%/src/*}"
+	
+	info 'Cleaning the stats table...' '0'
+	
+	# Cleans the stats table
+	exec_sql 'DELETE FROM stats;'
+	
+	info ' ├─ Deleting the old stats...' '50'
+	
+	# Cleans the stats folder
+	[[ -e "${iris_folder}/stats" ]] \
+		&& rm -rf "${iris_folder}/stats"
+	mkdir "${iris_folder}/stats"
+	
+	info ' └─ Cleaning sucessful!' '100'
+	
+	return 0
+}
+
+# Generates the stats report for a given user with R
+generate_user_report() {
+
+	# Local variables
+	local ip=$1
+	local iris_folder="${BASH_SOURCE[0]%/src/*}"
+	
+	info "Generation of the report for user $ip..." '0'
+	
+	# Calls R
+	R --slave --no-restore --no-save --file="${iris_folder}/src/user_stats.r" --args "$ip" &> /dev/null
+	
+	# Moves the PDF to the stats folder
+	mv 'iris_stats.pdf' "${iris_folder}/stats/$(echo $ip | sed 's/\./-/g').pdf"
+	
+	info ' └─ Report created!' '100'
+	
+	return 0
+}
+
+# Generates the stats report for the network with R
+generate_global_report() {
+	
+	# Local variables
+	local iris_folder="${BASH_SOURCE[0]%/src/*}"
+	
+	info 'Generation of the global report...' '0'
+	
+	# Ideas: network usage, user clustering
+	R --slave --no-restore --no-save --file="${iris_folder}/src/global_stats.r" &> /dev/null
+	
+	# Moves the PDF to the stats folder
+	mv 'iris_stats.pdf' "${iris_folder}/stats/overview.pdf"
+	
+	info ' └─ Report created!' '100'
+	
+	return 0
+}
+
 # Extracts stats from the database
-process_stats() {
+fill_stats_table() {
 
 	# Local variables
 	local arg_ip=$1
 	local ip_exists
 	
-	info 'Checking if the IP given exists in the database...' '0'
+	info "Checking if the IP $ip exists in the database..." '0'
 	
 	# Checks if there is at least a row with the given IP
 	ip_exists=$(exec_sql "SELECT exists(SELECT 1 FROM flows WHERE endpoint_a = '${arg_ip}' OR endpoint_b = '${arg_ip}');")
@@ -19,11 +106,6 @@ process_stats() {
 		error 'ip_doesnt_exist' "${arg_ip}"
 		return $?
 	fi
-	
-	info ' ├─ Deleting the previous stats on this IP...' '5'
-	
-	# Deletes the previous stats (the database may have changed)
-	exec_sql "DELETE FROM stats WHERE ip='${arg_ip}';"
 	
 	info ' ├─ Getting the days of activity...' '10'
 	
@@ -134,7 +216,7 @@ process_stats() {
 	SET websites_visited = q.websites_visited
 	FROM (
 		SELECT timestamp::DATE AS day,
-			count(DISTINCT w.id) AS websites_visited
+			coalesce(count(DISTINCT w.id), 0) AS websites_visited
 		FROM flows f
 		JOIN websites w ON f.website = w.id
 		WHERE f.protocol IN (
