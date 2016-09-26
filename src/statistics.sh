@@ -95,7 +95,7 @@ fill_stats_table() {
 	local arg_ip=$1
 	local ip_exists
 	
-	info "Checking if the IP $ip exists in the database..." '0'
+	info "Checking if the IP ${arg_ip} exists in the database..." '0'
 	
 	# Checks if there is at least a row with the given IP
 	ip_exists=$(exec_sql "SELECT exists(SELECT 1 FROM flows WHERE endpoint_a = '${arg_ip}' OR endpoint_b = '${arg_ip}');")
@@ -363,10 +363,12 @@ fill_stats_table() {
 		browsing_sess_time = q.browsing_sess_time
 	FROM (
 		SELECT q6.day,
-			count(*) AS browsing_sessions,
+			count(q6.timestamp_start) AS browsing_sessions,
 			sum(q6.duration) AS browsing_sess_time
 		FROM (
 			SELECT s2.day, q5.timestamp_start, q5.timestamp_end, CASE
+				WHEN q5.timestamp_start IS NULL OR q5.timestamp_end IS NULL
+					THEN INTERVAL '0'
 				WHEN q5.day_start = q5.day_end
 					THEN q5.timestamp_end - q5.timestamp_start
 				ELSE CASE
